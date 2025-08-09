@@ -52,4 +52,9 @@ void logCommunication(String type, String message);
 void handlePingPong(String jsonData);
 void sendStatusPing(String operation);
 
+// Nowe funkcje kompatybilne z ESP WROOM
+void handlePingPongTest();
+void handleAuthorizationRequest(String userId);
+void sendSystemStatus();
+
 #endif // COMMUNICATION_LOGIC_H

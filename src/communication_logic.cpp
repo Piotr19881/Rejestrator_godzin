@@ -5,206 +5,162 @@
 #include "SD_MMC.h"
 #include <time.h>
 
-// Pin wbudowanej diody LED na ESP32-CAM - MOŻE BYĆ BŁĘDNY!
-// #define LED_BUILTIN 4  // WYŁĄCZONE - może powoduje konflikt
-#define LED_BUILTIN 33  // PRÓBA INNEGO PINU (pin który na pewno nie jest używany)
-
 // Zmienne globalne dla stanu komunikacji
 bool awaitingConfirmation = false;
 LogEntry pendingLogEntry;
 
-// Zmienne do kontroli częstotliwości migania LED
-unsigned long lastLEDSignal = 0;
-const unsigned long LED_COOLDOWN = 1000; // 1 sekunda przerwy między miganiami
-
-// Funkcje pomocnicze do migania diodą
-void blinkLED(int times, int duration) {
-    for (int i = 0; i < times; i++) {
-        digitalWrite(LED_BUILTIN, LOW);   // Zapal diodę (LOW = ON na ESP32-CAM)
-        delay(duration);
-        digitalWrite(LED_BUILTIN, HIGH);  // Zgaś diodę (HIGH = OFF na ESP32-CAM)
-        if (i < times - 1) {
-            delay(duration);
-        }
-    }
-}
-
+// === FUNKCJE LED WYŁĄCZONE - POWODOWAŁY PROBLEMY ===
 void signalDataReceived() {
-    // TYMCZASOWO WYŁĄCZONE - DEBUG PROBLEMU LED
-    Serial.println("[LED] Sygnał: odebrano dane (LED WYŁĄCZONY)");
-    // blinkLED(1, 100);  // WYŁĄCZONE
+    // LED wyłączony - debug tylko przez Serial
 }
 
 void signalResponseSent() {
-    // TYMCZASOWO WYŁĄCZONE - DEBUG PROBLEMU LED
-    Serial.println("[LED] Sygnał: wysłano odpowiedź (LED WYŁĄCZONY)");
-    // blinkLED(1, 50);  // WYŁĄCZONE
+    // LED wyłączony - debug tylko przez Serial  
 }
 
 void setupCommunicationLogic() {
-    // TYMCZASOWO CAŁKOWICIE WYŁĄCZONE - DEBUG PROBLEMU
-    Serial.println("[COMM] LED CAŁKOWICIE WYŁĄCZONY - nie inicjalizuję pinu LED");
+    // ESP32-CAM używa domyślnego Serial (GPIO1/3) do komunikacji z ESP WROOM
+    // ESP WROOM używa Serial2 (GPIO16/17) do komunikacji z ESP32-CAM
+    Serial.begin(115200);
+    delay(1000);
     
-    // ESP32-CAM: używamy pinów 1 (TX) i 3 (RX) - domyślny UART0
-    // ESP WROOM: używa pinów 16 (TX) i 17 (RX) - UART2
-    Serial2.begin(115200, SERIAL_8N1, 3, 1);  // RX=3, TX=1 dla ESP32-CAM
-    Serial.println("[COMM] Komunikacja z ESP WROOM zainicjalizowana (ESP32-CAM piny 1/3, ESP WROOM piny 16/17, 115200 baud)");
+    Serial.println("[COMM] === ESP32-CAM KOMUNIKACJA START ===");
+    Serial.println("[COMM] UART na GPIO1(TX)/GPIO3(RX), 115200 baud");
+    Serial.println("[COMM] Połączenie z ESP WROOM (GPIO16/17)");
     Serial.println("[COMM] Oczekuję na dane z ESP WROOM...");
-    
-    // Wyślij komunikat gotowości do ESP-WROOM - BEZ MIGANIA LED
-    delay(2000); // Poczekaj 2 sekundy na stabilizację
-    Serial2.println("{ready}");
-    Serial.println("[COMM] Wysłano sygnał gotowości: {ready}");
-    
-    // Wysyłaj sygnał gotowości co 5 sekund przez pierwszą minutę - BEZ MIGANIA LED
-    for (int i = 0; i < 12; i++) {
-        delay(5000);
-        Serial2.println("{ready}");
-        Serial.println("[COMM] Ping gotowości #" + String(i+1));
-    }
-    
-    Serial.println("[COMM] System gotowy do komunikacji - LED WYŁĄCZONY!");
+    Serial.println("[COMM] === GOTOWY DO KOMUNIKACJI ===");
 }
 
 void handleCommunication() {
-    static unsigned long lastDebugTime = 0;
+    static unsigned long lastHeartbeat = 0;
     
-    // Debug co 10 sekund
-    if (millis() - lastDebugTime > 10000) {
-        Serial.println("[COMM] Nasłuchuję na Serial2... (ESP32-CAM piny 1/3, ESP WROOM piny 16/17)");
-        lastDebugTime = millis();
+    // Wyślij heartbeat co 30 sekund - TYLKO JSON!
+    if (millis() - lastHeartbeat > 30000) {
+        Serial.println("{\"heartbeat\":\"esp32cam_alive\"}");
+        Serial.flush();
+        lastHeartbeat = millis();
+        // LOG TYLKO DO SD, NIE DO UART!
+        logCommunication("HEARTBEAT_SENT", "esp32cam_alive");
     }
     
-    if (Serial2.available()) {
-        String jsonData = Serial2.readStringUntil('\n');
+    // Sprawdź dane przychodzące z ESP WROOM
+    if (Serial.available()) {
+        String jsonData = Serial.readStringUntil('\n');
         jsonData.trim();
         
-        // Sygnał LED po odebraniu danych
-        signalDataReceived();
+        if (jsonData.length() == 0) return;
         
-        Serial.println("=== ODEBRANO DANE ===");
-        Serial.println("[COMM] RAW DATA: '" + jsonData + "'");
-        Serial.println("[COMM] Długość: " + String(jsonData.length()));
-        Serial.println("[COMM] Pierwszy znak: '" + String(jsonData.charAt(0)) + "' ASCII:" + String((int)jsonData.charAt(0)));
-        Serial.println("[COMM] Ostatni znak: '" + String(jsonData.charAt(jsonData.length()-1)) + "' ASCII:" + String((int)jsonData.charAt(jsonData.length()-1)));
-        
-        // Loguj wszystkie odebrane dane
+        // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
         logCommunication("DATA_RECEIVED", "'" + jsonData + "' [" + String(jsonData.length()) + " bajtów]");
         
-        // Wyświetl każdy znak w hex
-        Serial.print("[COMM] HEX: ");
-        for (int i = 0; i < jsonData.length(); i++) {
-            Serial.print(String(jsonData.charAt(i), HEX) + " ");
-        }
-        Serial.println();
-
-        // NAJPIERW SPRAWDŹ PING-PONG I TESTY (przed parsowaniem JSON)
-        if (jsonData.indexOf("ping") != -1 || jsonData.indexOf("PING") != -1 || 
-            jsonData.indexOf("test") != -1 || jsonData.indexOf("TEST") != -1) {
-            handlePingPong(jsonData);
-            return; // Zakończ przetwarzanie - to był test komunikacji
-        }
-
-        DynamicJsonDocument doc(512);
+        // Parsowanie JSON z ESP WROOM
+        JsonDocument doc;
         DeserializationError error = deserializeJson(doc, jsonData);
-
-        if (error) {
-            Serial.print("[COMM] Błąd parsowania JSON: ");
-            Serial.println(error.c_str());
-            logCommunication("JSON_PARSE_ERROR", String(error.c_str()) + " - dane: '" + jsonData + "'");
-            return;
-        }
-
-        // Obsługa żądania autoryzacji
-        if (doc.containsKey("authorization")) {
-            String userId = doc["authorization"];
-            
-            // Normalizacja ID - usuń spacje aby dopasować format w CSV
-            userId.replace(" ", "");
-            
-            Serial.println("[COMM] Żądanie autoryzacji dla ID: " + userId);
-            Serial.println("[COMM] ID po normalizacji (bez spacji): " + userId);
-            logCommunication("AUTHORIZATION_REQUEST", "ID: " + userId);
-
-            // Weryfikacja użytkownika w arkuszu
-            VerificationResult result = verifyUserInSheet(userId);
-            
-            if (result.isValid && result.isActive) {
-                Serial.println("[COMM] Użytkownik zweryfikowany: " + result.name + " " + result.surname);
+        
+        if (!error) {
+            // Obsługa różnych typów zapytań
+            if (doc["test"].is<String>()) {
+                // Test ping-pong - TYLKO JSON RESPONSE!
+                handlePingPongTest();
                 
-                // Przygotuj dane do logu (zapisane do zmiennej globalnej)
-                pendingLogEntry.timestamp = getCurrentTimestamp();
-                pendingLogEntry.userId = result.userId;
-                pendingLogEntry.name = result.name;
-                pendingLogEntry.surname = result.surname;
-                pendingLogEntry.department = result.department;
-                pendingLogEntry.action = "WEJŚCIE"; // Domyślnie wejście
-                pendingLogEntry.isSuccessful = true;
+            } else if (doc["status"].is<String>()) {
+                // Żądanie statusu systemu - TYLKO JSON RESPONSE!
+                sendSystemStatus();
                 
-                // Zrób zdjęcie
-                takePhoto(userId);
+            } else if (doc["authorization"].is<String>()) {
+                // Żądanie autoryzacji - TYLKO JSON RESPONSE!
+                String authId = doc["authorization"];
+                handleAuthorizationRequest(authId);
                 
-                // Wyślij potwierdzenie do ESP WROOM
-                sendConfirmation(result.name, result.surname);
-                sendStatusPing("USER_VERIFIED_SUCCESS");
-                awaitingConfirmation = true;
+            } else if (doc["user_action"].is<String>()) {
+                // Obsługa akcji użytkownika (confirm/cancel)
+                String action = doc["user_action"];
+                if (action == "confirm") {
+                    logCommunication("USER_CONFIRMED", "Potwierdzenie od użytkownika");
+                    // Tutaj logika potwierdzenia
+                } else if (action == "cancel") {
+                    logCommunication("USER_CANCELLED", "Anulowanie od użytkownika");
+                    // Tutaj logika anulowania
+                }
+                
+            } else if (doc["heartbeat"].is<String>()) {
+                // Heartbeat od WROOM - TYLKO JSON RESPONSE!
+                Serial.println("{\"heartbeat\":\"ok\"}");
+                Serial.flush();
+                logCommunication("HEARTBEAT_RECEIVED", "od ESP WROOM");
                 
             } else {
-                Serial.println("[COMM] Autoryzacja odrzucona: " + result.errorMessage);
-                
-                // Zapisz w exception_logs
-                LogEntry exceptionEntry;
-                exceptionEntry.timestamp = getCurrentTimestamp();
-                exceptionEntry.userId = userId;
-                exceptionEntry.name = result.name;
-                exceptionEntry.surname = result.surname;
-                exceptionEntry.department = result.department;
-                exceptionEntry.action = "BŁĄD_AUTORYZACJI";
-                exceptionEntry.isSuccessful = false;
-                
-                logException(exceptionEntry, result.errorMessage);
-                
-                // Wyślij odmowę do ESP WROOM
-                sendDenial(result.errorMessage);
-                sendStatusPing("USER_VERIFICATION_FAILED");
+                logCommunication("UNKNOWN_COMMAND", "Nierozpoznane dane: '" + jsonData + "'");
             }
+        } else {
+            logCommunication("JSON_PARSE_ERROR", String(error.c_str()) + " - dane: '" + jsonData + "'");
         }
-        // Obsługa potwierdzenia od użytkownika
-        else if (jsonData.indexOf("{confirmed}") != -1 && awaitingConfirmation) {
-            Serial.println("[COMM] Otrzymano potwierdzenie użytkownika");
-            logCommunication("USER_CONFIRMED", "Użytkownik potwierdził: " + pendingLogEntry.name + " " + pendingLogEntry.surname);
-            
-            // Zapisz log do arkusza pracownicy_logi
-            logWorkEntry(pendingLogEntry);
-            
-            // Wyślij informację o zakończeniu procesu
-            sendProcessingComplete();
-            sendStatusPing("WORK_ENTRY_LOGGED");
-            
-            awaitingConfirmation = false;
-            Serial.println("[COMM] Proces rejestracji zakończony pomyślnie");
-        }
-        // Obsługa anulowania
-        else if (jsonData.indexOf("{cancelled}") != -1 && awaitingConfirmation) {
-            Serial.println("[COMM] Otrzymano anulowanie od użytkownika");
-            logCommunication("USER_CANCELLED", "Użytkownik anulował: " + pendingLogEntry.name + " " + pendingLogEntry.surname);
-            
-            // Zapisz anulowanie w exception_logs
-            LogEntry cancelEntry = pendingLogEntry;
-            cancelEntry.action = "ANULOWANIE";
-            cancelEntry.isSuccessful = false;
-            
-            logException(cancelEntry, "Użytkownik anulował proces");
-            sendStatusPing("WORK_ENTRY_CANCELLED");
-            
-            awaitingConfirmation = false;
-            Serial.println("[COMM] Proces anulowany przez użytkownika");
-        }
-        else {
-            // Nieznana komenda
-            Serial.println("[COMM] UWAGA: Nierozpoznana komenda JSON");
-            logCommunication("UNKNOWN_COMMAND", "Nierozpoznane dane: '" + jsonData + "'");
-        }
+    }
+}
+
+// Nowa funkcja obsługi ping-pong dla ESP WROOM
+void handlePingPongTest() {
+    String response = "{\"pong\":\"esp32cam_alive\",\"timestamp\":\"" + getCurrentTimestamp() + "\"}";
+    // TYLKO JSON RESPONSE - BEZ LOGÓW DEBUGOWANIA!
+    Serial.println(response);
+    Serial.flush();
+    // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+    logCommunication("PING_RESPONSE", response);
+}
+
+// Nowa funkcja obsługi autoryzacji
+void handleAuthorizationRequest(String userId) {
+    // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+    logCommunication("AUTH_REQUEST", "ID = " + userId);
+    
+    // Weryfikacja użytkownika w bazie danych CSV
+    VerificationResult result = verifyUserInSheet(userId);
+    
+    if (result.isValid && result.isActive) {
+        // Użytkownik zweryfikowany - TYLKO JSON RESPONSE!
+        String confirmResponse = "{confirm;" + result.name + ";" + result.surname + "}";
+        Serial.println(confirmResponse);
+        Serial.flush();
+        
+        // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+        logCommunication("AUTH_SUCCESS", result.name + " " + result.surname);
+        
+        // Przygotuj wpis do logu
+        pendingLogEntry.timestamp = getCurrentTimestamp();
+        pendingLogEntry.userId = result.userId;
+        pendingLogEntry.name = result.name;
+        pendingLogEntry.surname = result.surname;
+        pendingLogEntry.department = result.department;
+        pendingLogEntry.action = "WEJŚCIE";
+        pendingLogEntry.isSuccessful = true;
+        
+        // Zrób zdjęcie
+        takePhoto(userId);
+        
+        // Zapisz log
+        logWorkEntry(pendingLogEntry);
+        
+        awaitingConfirmation = false;
+        
+    } else {
+        // Użytkownik nieaktywny lub nie znaleziony - TYLKO JSON RESPONSE!
+        Serial.println("{denide}");
+        Serial.flush();
+        
+        // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+        logCommunication("AUTH_DENIED", result.errorMessage);
+        
+        // Zapisz w exception_logs
+        LogEntry exceptionEntry;
+        exceptionEntry.timestamp = getCurrentTimestamp();
+        exceptionEntry.userId = userId;
+        exceptionEntry.name = result.name;
+        exceptionEntry.surname = result.surname;
+        exceptionEntry.department = result.department;
+        exceptionEntry.action = "BŁĄD_AUTORYZACJI";
+        exceptionEntry.isSuccessful = false;
+        
+        logException(exceptionEntry, result.errorMessage);
     }
 }
 
@@ -215,19 +171,22 @@ VerificationResult verifyUserInSheet(String userId) {
     result.userId = userId;
     result.errorMessage = "Nieznany błąd";
     
-    Serial.println("[VERIFY] Weryfikacja użytkownika ID: " + userId);
+    // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+    logCommunication("VERIFY_REQUEST", "ID = " + userId);
     
     File file = SD_MMC.open("/czytnik_projekt/data/Pracownicy_data.csv");
     if (!file) {
         result.errorMessage = "Nie można otworzyć pliku Pracownicy_data.csv";
-        Serial.println("[VERIFY] " + result.errorMessage);
+        // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+        logCommunication("FILE_ERROR", result.errorMessage);
         return result;
     }
     
     // Odczytaj nagłówek
     String header = file.readStringUntil('\n');
     header.trim();
-    Serial.println("[VERIFY] Nagłówek CSV: " + header);
+    // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+    logCommunication("CSV_HEADER", header);
     
     // Szukaj użytkownika
     while (file.available()) {
@@ -244,7 +203,8 @@ VerificationResult verifyUserInSheet(String userId) {
         csvUserId.trim();
         
         if (csvUserId.equals(userId)) {
-            Serial.println("[VERIFY] Znaleziono użytkownika: " + line);
+            // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+            logCommunication("USER_FOUND", line);
             
             // Parsuj pozostałe pola
             int secondComma = line.indexOf(',', firstComma + 1);
@@ -282,7 +242,8 @@ VerificationResult verifyUserInSheet(String userId) {
     
     if (!result.isValid) {
         result.errorMessage = "Użytkownik o ID " + userId + " nie został znaleziony";
-        Serial.println("[VERIFY] " + result.errorMessage);
+        // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+        logCommunication("USER_NOT_FOUND", result.errorMessage);
     }
     
     return result;
@@ -300,36 +261,30 @@ String getCurrentTimestamp() {
     return String(timeString);
 }
 
+// === STARE FUNKCJE - ZACHOWANE DLA KOMPATYBILNOŚCI ===
+
 void sendConfirmation(String name, String surname) {
-    String response = "{confirm;" + name + ";" + surname + "}";
-    Serial2.println(response);
-    Serial.println("[COMM] Wysłano potwierdzenie: " + response);
-    logCommunication("CONFIRMATION_SENT", response);
-    signalResponseSent(); // Miganie po wysłaniu odpowiedzi
+    // Ta funkcja jest teraz obsługiwana w handleAuthorizationRequest()
+    Serial.println("{confirm;" + name + ";" + surname + "}");
+    Serial.flush();
 }
 
 void sendDenial(String reason) {
-    String response = "{denide}"; // Zachowaj literówkę dla zgodności z ESP-WROOM
-    Serial2.println(response);
-    Serial.println("[COMM] Wysłano odmowę: " + response + " (powód: " + reason + ")");
-    logCommunication("DENIAL_SENT", response + " (powód: " + reason + ")");
-    signalResponseSent(); // Miganie po wysłaniu odpowiedzi
+    // Ta funkcja jest teraz obsługiwana w handleAuthorizationRequest()
+    Serial.println("{denide}");
+    Serial.flush();
 }
 
 void sendProcessingComplete() {
-    Serial2.println("{\"complete\":\"OK\"}");
-    Serial.println("[COMM] Wysłano potwierdzenie zakończenia procesu");
-    logCommunication("PROCESSING_COMPLETE", "{\"complete\":\"OK\"}");
-    signalResponseSent(); // Miganie po wysłaniu odpowiedzi
+    Serial.println("{\"complete\":\"OK\"}");
+    Serial.flush();
 }
 
 // === FUNKCJE DEBUGOWE ===
 
 void sendDebugResponse() {
-    Serial.println("[DEBUG] Wysyłam testową odpowiedź...");
-    Serial2.println("{confirm;Jan;Kowalski}");
-    Serial.println("[DEBUG] Wysłano: {confirm;Jan;Kowalski}");
-    signalResponseSent(); // Miganie po wysłaniu odpowiedzi
+    Serial.println("{confirm;Jan;Kowalski}");
+    Serial.flush();
 }
 
 void testCommunication() {
@@ -338,8 +293,8 @@ void testCommunication() {
     
     unsigned long startTime = millis();
     while (millis() - startTime < 30000) { // 30 sekund
-        if (Serial2.available()) {
-            String receivedData = Serial2.readStringUntil('\n');
+        if (Serial.available()) {
+            String receivedData = Serial.readStringUntil('\n');
             receivedData.trim();
             
             Serial.println("[TEST] Odebrano: '" + receivedData + "'");
@@ -347,14 +302,14 @@ void testCommunication() {
             Serial.println("[TEST] Pierwszy znak ASCII: " + String((int)receivedData.charAt(0)));
             
             // Test parsowania JSON
-            DynamicJsonDocument doc(512);
+            JsonDocument doc;
             DeserializationError error = deserializeJson(doc, receivedData);
             
             if (error) {
                 Serial.println("[TEST] Błąd JSON: " + String(error.c_str()));
             } else {
                 Serial.println("[TEST] JSON poprawny!");
-                if (doc.containsKey("authorization")) {
+                if (doc["authorization"].is<String>()) {
                     String userId = doc["authorization"];
                     Serial.println("[TEST] Znaleziono ID: '" + userId + "'");
                     
@@ -452,26 +407,27 @@ void simulateWROOMRequest() {
 
 // === FUNKCJE PING-PONG I LOGOWANIA KOMUNIKACJI ===
 
-// Funkcja logowania komunikacji na kartę SD
+// Funkcja logowania komunikacji na kartę SD - BEZ DEBUGOWANIA PRZEZ UART!
 void logCommunication(String type, String message) {
     String timestamp = getCurrentTimestamp();
     String logEntry = timestamp + ",[" + type + "]," + message;
     
-    Serial.println("[LOG] " + logEntry);
+    // TYLKO ZAPIS NA SD - BEZ WYSYŁANIA PRZEZ UART!
+    // Serial.println("[LOG] " + logEntry); // WYŁĄCZONE!
     
     // Zapisz na kartę SD
     File logFile = SD_MMC.open("/czytnik_projekt/logs/communication.log", FILE_APPEND);
     if (logFile) {
         logFile.println(logEntry);
         logFile.close();
-        Serial.println("[LOG] Zapisano do communication.log");
+        // Serial.println("[LOG] Zapisano do communication.log"); // WYŁĄCZONE!
     } else {
-        Serial.println("[LOG] BŁĄD: Nie można otworzyć communication.log");
+        // Serial.println("[LOG] BŁĄD: Nie można otworzyć communication.log"); // WYŁĄCZONE!
         
         // Spróbuj utworzyć katalog logs jeśli nie istnieje
         if (!SD_MMC.exists("/czytnik_projekt/logs")) {
             if (SD_MMC.mkdir("/czytnik_projekt/logs")) {
-                Serial.println("[LOG] Utworzono katalog /czytnik_projekt/logs");
+                // Serial.println("[LOG] Utworzono katalog /czytnik_projekt/logs"); // WYŁĄCZONE!
                 // Spróbuj ponownie zapisać
                 File retryFile = SD_MMC.open("/czytnik_projekt/logs/communication.log", FILE_APPEND);
                 if (retryFile) {
@@ -497,7 +453,8 @@ void handlePingPong(String jsonData) {
         
         // Wyślij odpowiedź pong
         String pongResponse = "{\"response\":\"pong\",\"timestamp\":\"" + getCurrentTimestamp() + "\"}";
-        Serial2.println(pongResponse);
+        Serial.println(pongResponse);
+        Serial.flush();
         
         Serial.println("[PING] Wysłano PONG: " + pongResponse);
         logCommunication("PONG_SENT", pongResponse);
@@ -509,7 +466,8 @@ void handlePingPong(String jsonData) {
         Serial.println("[TEST] Wykryto sygnał TEST - odpowiadam OK");
         
         String testResponse = "{\"response\":\"OK\",\"status\":\"ESP32-CAM_READY\",\"timestamp\":\"" + getCurrentTimestamp() + "\"}";
-        Serial2.println(testResponse);
+        Serial.println(testResponse);
+        Serial.flush();
         
         Serial.println("[TEST] Wysłano TEST OK: " + testResponse);
         logCommunication("TEST_RESPONSE_SENT", testResponse);
@@ -523,7 +481,28 @@ void sendStatusPing(String operation) {
     String timestamp = getCurrentTimestamp();
     String pingMessage = "{\"ping\":\"status\",\"operation\":\"" + operation + "\",\"timestamp\":\"" + timestamp + "\"}";
     
-    Serial2.println(pingMessage);
+    Serial.println(pingMessage);
+    Serial.flush();
     Serial.println("[PING-STATUS] Wysłano ping po operacji '" + operation + "': " + pingMessage);
     logCommunication("STATUS_PING_SENT", operation + " - " + pingMessage);
+}
+
+// Nowa funkcja: Status systemu dla ESP WROOM
+void sendSystemStatus() {
+    extern bool system_ready, wifi_connected, sd_initialized, config_loaded, sync_attempted;
+    
+    String status = "{";
+    status += "\"system_status\":\"" + String(system_ready ? "ready" : "initializing") + "\",";
+    status += "\"wifi\":\"" + String(wifi_connected ? "connected" : "disconnected") + "\",";
+    status += "\"sd_card\":\"" + String(sd_initialized ? "ok" : "error") + "\",";
+    status += "\"config\":\"" + String(config_loaded ? "loaded" : "default") + "\",";
+    status += "\"sync\":\"" + String(sync_attempted ? "attempted" : "skipped") + "\",";
+    status += "\"timestamp\":\"" + getCurrentTimestamp() + "\"";
+    status += "}";
+    
+    // TYLKO JSON RESPONSE - BEZ LOGÓW DEBUGOWANIA!
+    Serial.println(status);
+    Serial.flush();
+    // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
+    logCommunication("SYSTEM_STATUS_SENT", status);
 }
