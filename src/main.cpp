@@ -1,399 +1,296 @@
 #include <Arduino.h>
 #include <SPI.h>
+#include <MFRC522.h>
 #include <TFT_eSPI.h>
-#include "tft_debug.h"
+#include "screens.h"
+#include "keypad.h"
+#include "local_communication.h"
 
-// TFT Display
+// TFT_eSPI: piny VSPI ustawione w User_Setup.h
 TFT_eSPI tft = TFT_eSPI();
-TFTDebug* debugConsole = nullptr;
 
-// Stany aplikacji
-enum AppState {
-  STATE_MENU,
-  STATE_MONITOR,
-  STATE_SEND_TEST,
-  STATE_SEND_AUTH,
-  STATE_SEND_CUSTOM
-};
+// Piny RFID RC522
+#define SS_PIN      22
+#define RST_PIN     5
 
-AppState currentState = STATE_MENU;
-String customMessage = "";
-String lastResponse = "";
-unsigned long lastActivityTime = 0;
+// Konfiguracja RC522
+MFRC522 rfid(SS_PIN, RST_PIN);
 
-// Funkcje menu
-void drawMainMenu();
-void drawMonitorScreen();
-void drawSendTestScreen();
-void drawSendAuthScreen();
-void drawSendCustomScreen();
-void handleMenuTouch(uint16_t x, uint16_t y);
-void sendTestCommand();
-void sendAuthCommand(String id);
-void sendCustomCommand(String message);
-void initUART();
-void processIncomingData();
+// Zmienne dla obsługi aplikacji
+String cardID = "";
+String enteredPESEL = "";
+bool waitingForCard = true;
+bool keypadActive = false;
+
+// Funkcje do przełączania SPI
+void enableTouchSPI() {
+  SPI.end();
+  SPI.begin(); // Domyślne piny TFT
+}
+
+void enableRFIDSPI() {
+  SPI.end();
+  SPI.begin(14, 12, 13, 22); // Twoje piny RFID
+}
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("=== ESP32 WROOM - ESP-CAM Communication Tester ===");
+  while (!Serial) {
+    ; // Czekaj na połączenie z portem szeregowym
+  }
+  Serial.println("=== Rozpoczynam konfiguracje ===");
+
+  // --- INICJALIZACJA KOMUNIKACJI Z ESP-CAM ---
+  Serial.println("0. Inicjalizacja komunikacji z ESP-CAM...");
+  Serial2.begin(115200, SERIAL_8N1, 16, 17); 
+  Serial.println("Serial2 zainicjalizowany (RX:16, TX:17, 115200 baud)");
+  delay(500);
   
-  // Inicjalizacja TFT
+  // Użyj nowego systemu oczekiwania na gotowość ESP32-CAM
+  Serial.println("Czekam na sygnał gotowości ESP32-CAM (max 90s)...");
+  bool espCamReady = waitForESPCamReady(90000); // 90 sekund timeout
+  
+  if (espCamReady) {
+    Serial.println("✓ ESP32-CAM gotowy do komunikacji!");
+    Serial.println("✓ Można wysyłać zapytania o autoryzację");
+  } else {
+    Serial.println("⚠ ESP32-CAM nie wysłał sygnału gotowości. Sprawdź:");
+    Serial.println("  - Połączenia: ESP32-CAM TX->WROOM RX(16), ESP32-CAM RX->WROOM TX(17)");
+    Serial.println("  - Zasilanie ESP32-CAM");
+    Serial.println("  - Kod ESP32-CAM uruchomiony");
+    Serial.println("  - Połączenie WiFi ESP32-CAM");
+    Serial.println("  - Połączenie z Google Sheets");
+    Serial.println("Kontynuuję konfigurację bez ESP32-CAM...");
+    setESPCamReady(false);
+  }
+  
+  Serial.println("--------------------------");
+
+  // --- KROK 1: Inicjalizacja i diagnostyka RFID ---
+  Serial.println("1. Konfiguracja RFID...");
+  enableRFIDSPI();   // Ustaw SPI dla RFID
+  rfid.PCD_Init();   // Inicjalizacja RC522
+  delay(10);         // Krótka pauza dla stabilności
+
+  Serial.println("Sprawdzanie wersji MFRC522...");
+  rfid.PCD_DumpVersionToSerial(); // Wyświetl szczegółowe informacje o wersji
+  
+  byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
+  if (version == 0x00 || version == 0xFF) {
+    Serial.println("BŁĄD KRYTYCZNY: Nie można nawiązać komunikacji z RC522.");
+    Serial.println("Sprawdź dokładnie połączenia pinów (SCK, MISO, MOSI, SS, RST)!");
+    // Na tym etapie można by wyświetlić błąd na ekranie, ale bez SPI dla TFT to niemożliwe
+    while(true); // Zatrzymaj program
+  }
+  Serial.println("Komunikacja z RC522 OK.");
+  Serial.println("--------------------------");
+
+  // --- KROK 2: Inicjalizacja TFT i Kalibracja ---
+  Serial.println("2. Konfiguracja TFT...");
+  enableTouchSPI(); // Przełącz SPI na tryb dla TFT
   tft.init();
   tft.setRotation(0);
+  
+  // Kalibracja dotyku - na podstawie działającego przykładu
   tft.fillScreen(TFT_BLACK);
-  
-  // Kalibracja dotyku
-  tft.setCursor(20, 100);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(20, 0);
+  tft.setTextFont(2);
   tft.setTextSize(1);
-  tft.println("Kalibracja dotyku...");
-  
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.println("Uruchamiam kalibracje dotyku...");
+  delay(1000);
+
   uint16_t calData[5];
   tft.calibrateTouch(calData, TFT_MAGENTA, TFT_BLACK, 15);
   tft.setTouch(calData);
+  Serial.println("Kalibracja zakonczona.");
   
-  // Inicjalizacja UART dla ESP-CAM
-  initUART();
+  // Inicjalizacja systemu ekranów
+  initScreens(); // To wyświetli pierwszy ekran motywacyjny
   
-  // Inicjalizacja debug console
-  debugConsole = new TFTDebug(&tft);
+  // Inicjalizacja klawiatury
+  initKeypad();
   
-  // Wyświetl menu główne
-  drawMainMenu();
-  
-  Serial.println("System gotowy!");
+  Serial.println("System gotowy - oczekiwanie na karte...");
 }
 
 void loop() {
-  // Obsługa komunikacji z ESP-CAM
-  processIncomingData();
+  // ===========================================
+  // KOD TESTOWY - NASŁUCH NA SERIAL2 (RX/TX)
+  // ===========================================
   
-  // Obsługa dotyku
-  uint16_t x, y;
-  bool touched = tft.getTouch(&x, &y);
+  static int rxCounter = 0;
+  static unsigned long lastHeartbeat = 0;
   
-  if (touched) {
-    handleMenuTouch(x, y);
-    delay(200); // Debounce
+  // Co 30 sekund wyślij sygnał życia do ESP-CAM
+  if (millis() - lastHeartbeat > 30000) {
+    Serial.println("[HEARTBEAT] Wysyłam sygnał życia do ESP-CAM");
+    Serial2.println("{\"heartbeat\":\"alive\"}");
+    lastHeartbeat = millis();
   }
   
-  // Auto-refresh monitora co 5 sekund
-  if (currentState == STATE_MONITOR && millis() - lastActivityTime > 5000) {
-    debugConsole->addTimestamp("Monitoring...");
-    lastActivityTime = millis();
-  }
-  
-  delay(50);
-}
-
-void initUART() {
-  Serial2.begin(115200, SERIAL_8N1, 16, 17); // RX=16, TX=17
-  Serial.println("Serial2 zainicjalizowany (RX:16, TX:17, 115200 baud)");
-  
-  // Wyczyść bufor
-  int cleared = 0;
-  while(Serial2.available()) {
-    char c = Serial2.read();
-    cleared++;
-  }
-  
-  if (cleared > 0) {
-    Serial.print("Wyczyszczono ");
-    Serial.print(cleared);
-    Serial.println(" znaków z bufora UART");
-  }
-}
-
-void drawMainMenu() {
-  currentState = STATE_MENU;
-  tft.fillScreen(TFT_BLACK);
-  
-  // Nagłówek
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextDatum(TC_DATUM);
-  tft.drawString("ESP-CAM Tester", tft.width()/2, 20, 4);
-  
-  // Przyciski menu
-  tft.setTextColor(TFT_WHITE, TFT_BLUE);
-  tft.fillRoundRect(20, 80, 200, 40, 5, TFT_BLUE);
-  tft.drawString("1. Monitor", 120, 95, 2);
-  
-  tft.fillRoundRect(20, 130, 200, 40, 5, TFT_GREEN);
-  tft.drawString("2. Test Ping", 120, 145, 2);
-  
-  tft.fillRoundRect(20, 180, 200, 40, 5, TFT_ORANGE);
-  tft.drawString("3. Test Auth", 120, 195, 2);
-  
-  tft.fillRoundRect(20, 230, 200, 40, 5, TFT_PURPLE);
-  tft.drawString("4. Custom Msg", 120, 245, 2);
-  
-  // Instrukcje
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("Dotknij opcje:", 20, 290, 2);
-}
-
-void drawMonitorScreen() {
-  currentState = STATE_MONITOR;
-  debugConsole->clear();
-  debugConsole->addTimestamp("Monitor aktywny");
-  debugConsole->println("Nasluchuje na RX:16...");
-  
-  // Przycisk powrotu
-  tft.fillRoundRect(180, 300, 60, 30, 5, TFT_RED);
-  tft.setTextColor(TFT_WHITE, TFT_RED);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("MENU", 210, 315, 2);
-}
-
-void drawSendTestScreen() {
-  currentState = STATE_SEND_TEST;
-  tft.fillScreen(TFT_BLACK);
-  
-  // Nagłówek
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.setTextDatum(TC_DATUM);
-  tft.drawString("Test Ping", tft.width()/2, 20, 4);
-  
-  // Przyciski testowe
-  tft.fillRoundRect(20, 80, 200, 40, 5, TFT_GREEN);
-  tft.setTextColor(TFT_WHITE, TFT_GREEN);
-  tft.drawString("Wyslij Ping", 120, 95, 2);
-  
-  tft.fillRoundRect(20, 130, 200, 40, 5, TFT_CYAN);
-  tft.drawString("Heartbeat", 120, 145, 2);
-  
-  tft.fillRoundRect(20, 180, 200, 40, 5, TFT_YELLOW);
-  tft.setTextColor(TFT_BLACK, TFT_YELLOW);
-  tft.drawString("Status Check", 120, 195, 2);
-  
-  // Status ostatniej odpowiedzi
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("Ostatnia odpowiedz:", 20, 240, 2);
-  tft.drawString(lastResponse.substring(0, 30), 20, 260, 1);
-  
-  // Przycisk powrotu
-  tft.fillRoundRect(180, 300, 60, 30, 5, TFT_RED);
-  tft.setTextColor(TFT_WHITE, TFT_RED);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("MENU", 210, 315, 2);
-}
-
-void drawSendAuthScreen() {
-  currentState = STATE_SEND_AUTH;
-  tft.fillScreen(TFT_BLACK);
-  
-  // Nagłówek
-  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-  tft.setTextDatum(TC_DATUM);
-  tft.drawString("Test Autoryzacji", tft.width()/2, 20, 4);
-  
-  // Przyciski z przykładowymi ID
-  tft.fillRoundRect(20, 80, 200, 40, 5, TFT_ORANGE);
-  tft.setTextColor(TFT_WHITE, TFT_ORANGE);
-  tft.drawString("ID: 12345", 120, 95, 2);
-  
-  tft.fillRoundRect(20, 130, 200, 40, 5, TFT_ORANGE);
-  tft.drawString("PESEL: 90010112345", 120, 145, 2);
-  
-  tft.fillRoundRect(20, 180, 200, 40, 5, TFT_ORANGE);
-  tft.drawString("RFID: A1B2C3D4", 120, 195, 2);
-  
-  // Status
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("Ostatnia odpowiedz:", 20, 240, 2);
-  tft.drawString(lastResponse.substring(0, 30), 20, 260, 1);
-  
-  // Przycisk powrotu
-  tft.fillRoundRect(180, 300, 60, 30, 5, TFT_RED);
-  tft.setTextColor(TFT_WHITE, TFT_RED);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("MENU", 210, 315, 2);
-}
-
-void drawSendCustomScreen() {
-  currentState = STATE_SEND_CUSTOM;
-  tft.fillScreen(TFT_BLACK);
-  
-  // Nagłówek
-  tft.setTextColor(TFT_PURPLE, TFT_BLACK);
-  tft.setTextDatum(TC_DATUM);
-  tft.drawString("Custom Message", tft.width()/2, 20, 4);
-  
-  // Predefiniowane wiadomości
-  tft.fillRoundRect(20, 80, 200, 30, 5, TFT_PURPLE);
-  tft.setTextColor(TFT_WHITE, TFT_PURPLE);
-  tft.drawString("{\"test\":\"ping\"}", 120, 90, 1);
-  
-  tft.fillRoundRect(20, 120, 200, 30, 5, TFT_PURPLE);
-  tft.drawString("{\"status\":\"check\"}", 120, 130, 1);
-  
-  tft.fillRoundRect(20, 160, 200, 30, 5, TFT_PURPLE);
-  tft.drawString("{\"reset\":\"true\"}", 120, 170, 1);
-  
-  tft.fillRoundRect(20, 200, 200, 30, 5, TFT_PURPLE);
-  tft.drawString("{\"config\":\"wifi\"}", 120, 210, 1);
-  
-  // Status
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("Ostatnia odpowiedz:", 20, 240, 2);
-  tft.drawString(lastResponse.substring(0, 30), 20, 260, 1);
-  
-  // Przycisk powrotu
-  tft.fillRoundRect(180, 300, 60, 30, 5, TFT_RED);
-  tft.setTextColor(TFT_WHITE, TFT_RED);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString("MENU", 210, 315, 2);
-}
-
-void handleMenuTouch(uint16_t x, uint16_t y) {
-  // Sprawdź przycisk MENU (we wszystkich ekranach oprócz głównego)
-  if (currentState != STATE_MENU && x > 180 && x < 240 && y > 300 && y < 330) {
-    drawMainMenu();
-    return;
-  }
-  
-  switch (currentState) {
-    case STATE_MENU:
-      if (x > 20 && x < 220) {
-        if (y > 80 && y < 120) {
-          drawMonitorScreen();
-        } else if (y > 130 && y < 170) {
-          drawSendTestScreen();
-        } else if (y > 180 && y < 220) {
-          drawSendAuthScreen();
-        } else if (y > 230 && y < 270) {
-          drawSendCustomScreen();
-        }
-      }
-      break;
-      
-    case STATE_SEND_TEST:
-      if (x > 20 && x < 220) {
-        if (y > 80 && y < 120) {
-          sendTestCommand();
-        } else if (y > 130 && y < 170) {
-          sendCustomCommand("{\"heartbeat\":\"alive\"}");
-        } else if (y > 180 && y < 220) {
-          sendCustomCommand("{\"status\":\"check\"}");
-        }
-      }
-      break;
-      
-    case STATE_SEND_AUTH:
-      if (x > 20 && x < 220) {
-        if (y > 80 && y < 120) {
-          sendAuthCommand("12345");
-        } else if (y > 130 && y < 170) {
-          sendAuthCommand("90010112345");
-        } else if (y > 180 && y < 220) {
-          sendAuthCommand("A1B2C3D4");
-        }
-      }
-      break;
-      
-    case STATE_SEND_CUSTOM:
-      if (x > 20 && x < 220) {
-        if (y > 80 && y < 110) {
-          sendCustomCommand("{\"test\":\"ping\"}");
-        } else if (y > 120 && y < 150) {
-          sendCustomCommand("{\"status\":\"check\"}");
-        } else if (y > 160 && y < 190) {
-          sendCustomCommand("{\"reset\":\"true\"}");
-        } else if (y > 200 && y < 230) {
-          sendCustomCommand("{\"config\":\"wifi\"}");
-        }
-      }
-      break;
-  }
-}
-
-void sendTestCommand() {
-  String cmd = "{\"test\":\"ping\"}";
-  Serial2.println(cmd);
-  Serial2.flush();
-  
-  Serial.println("TX: " + cmd);
-  lastResponse = "Wysłano: " + cmd;
-  
-  if (currentState == STATE_MONITOR && debugConsole) {
-    debugConsole->addTimestamp("TX: " + cmd);
-  }
-  
-  // Odśwież ekran
-  drawSendTestScreen();
-}
-
-void sendAuthCommand(String id) {
-  String cmd = "{\"authorization\":\"" + id + "\"}";
-  Serial2.println(cmd);
-  Serial2.flush();
-  
-  Serial.println("TX: " + cmd);
-  lastResponse = "Auth: " + id;
-  
-  if (currentState == STATE_MONITOR && debugConsole) {
-    debugConsole->addTimestamp("TX: " + cmd);
-  }
-  
-  // Odśwież ekran
-  drawSendAuthScreen();
-}
-
-void sendCustomCommand(String message) {
-  Serial2.println(message);
-  Serial2.flush();
-  
-  Serial.println("TX: " + message);
-  lastResponse = "Custom: " + message.substring(0, 15);
-  
-  if (currentState == STATE_MONITOR && debugConsole) {
-    debugConsole->addTimestamp("TX: " + message);
-  }
-  
-  // Odśwież odpowiedni ekran
-  if (currentState == STATE_SEND_CUSTOM) {
-    drawSendCustomScreen();
-  } else if (currentState == STATE_SEND_TEST) {
-    drawSendTestScreen();
-  }
-}
-
-void processIncomingData() {
+  // Sprawdź, czy są dane przychodzące z ESP32-CAM
   if (Serial2.available()) {
-    String receivedLine = Serial2.readStringUntil('\n');
-    receivedLine.trim();
+    char c = Serial2.read();
+    static String receivedData = "";
     
-    if (receivedLine.length() > 0) {
-      Serial.println("RX: " + receivedLine);
-      lastResponse = receivedLine;
-      
-      // Wyświetl w konsoli debug jeśli w trybie monitora
-      if (currentState == STATE_MONITOR && debugConsole) {
-        // Skategoryzuj odpowiedź
-        String category = "";
-        if (receivedLine.startsWith("{confirm") || receivedLine.startsWith("{denide")) {
-          category = "[AUTH] ";
-        } else if (receivedLine.indexOf("pong") >= 0 || receivedLine.indexOf("test") >= 0) {
-          category = "[TEST] ";
-        } else if (receivedLine.indexOf("WiFi") >= 0 || receivedLine.indexOf("connected") >= 0) {
-          category = "[WIFI] ";
-        } else if (receivedLine.startsWith("ets Jul") || receivedLine.startsWith("rst:")) {
-          category = "[BOOT] ";
-        } else if (receivedLine.length() > 50) {
-          category = "[LONG] ";
-        } else {
-          category = "[INFO] ";
+    // Pokaż surowe bajty dla pierwszych 20 znaków każdej sesji
+    if (rxCounter < 20) {
+      Serial.print("[RX ");
+      Serial.print(rxCounter);
+      Serial.print("]: '");
+      if (c >= 32 && c <= 126) { // Drukowalne znaki ASCII
+        Serial.print(c);
+      } else {
+        Serial.print("\\x");
+        Serial.print(c, HEX);
+      }
+      Serial.print("' (0x");
+      Serial.print(c, HEX);
+      Serial.println(")");
+    }
+    rxCounter++;
+    
+    if (c == '\n' || c == '\r') {
+      if (receivedData.length() > 0) {
+        receivedData.trim();
+        
+        // Zawsze pokazuj odebrane linie z czasem
+        Serial.print("[");
+        Serial.print(millis()/1000);
+        Serial.print("s] RX LINE: '");
+        Serial.print(receivedData);
+        Serial.println("'");
+        
+        // Analiza typu wiadomości
+        if (receivedData.startsWith("{confirm") || receivedData.startsWith("{denide")) {
+          Serial.println("*** ODPOWIEDŹ AUTORYZACYJNA ***");
+        } else if (receivedData.indexOf("pong") >= 0 || receivedData.indexOf("ready") >= 0) {
+          Serial.println("*** SYGNAŁ GOTOWOŚCI ESP-CAM ***");
+        } else if (receivedData.startsWith("ets Jul") || receivedData.startsWith("rst:")) {
+          Serial.println("(ESP-CAM restart - ignoruję)");
+        } else if (receivedData.startsWith("WiFi") || receivedData.indexOf("connected") >= 0) {
+          Serial.println("(ESP-CAM łączy się z WiFi)");
+        } else if (receivedData.length() > 50) {
+          Serial.println("(Długi komunikat - prawdopodobnie log inicjalizacji)");
         }
         
-        debugConsole->addTimestamp(category + receivedLine.substring(0, 25));
+        receivedData = "";
       }
+    } else {
+      receivedData += c;
       
-      lastActivityTime = millis();
+      // Zabezpieczenie przed zbyt długimi liniami
+      if (receivedData.length() > 500) {
+        Serial.println("[UWAGA] Linia zbyt długa, resetuję bufor");
+        receivedData = "";
+      }
     }
+  }
+  
+  // Sprawdź, czy są dane do wysłania z Serial Monitor
+  if (Serial.available()) {
+    String dataToSend = Serial.readStringUntil('\n');
+    dataToSend.trim();
+    
+    if (dataToSend.length() > 0) {
+      Serial.println("=== WYSYŁANIE RĘCZNE ===");
+      Serial.print("Tekst: '");
+      Serial.print(dataToSend);
+      Serial.println("'");
+      Serial.print("Długość: ");
+      Serial.print(dataToSend.length());
+      Serial.println(" bajtów");
+      
+      Serial2.println(dataToSend);
+      Serial2.flush();
+      Serial.println("Wysłano! Resetuję licznik RX...");
+      rxCounter = 0; // Reset licznika przy nowej wiadomości
+    }
+  }
+  
+  // WAŻNE: Aktualizuj ekrany oczekiwania, żeby nie było czarnego ekranu
+  enableTouchSPI();
+  
+  // Obsługa RFID i dotyku podczas testów
+  bool cardReadSuccess = false;
+
+  // --- ODCZYT RFID ---
+  enableRFIDSPI();
+  
+  if (waitingForCard && !keypadActive) {
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+      cardID = "";
+      for (byte i = 0; i < rfid.uid.size; i++) {
+        cardID += String(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
+        cardID += String(rfid.uid.uidByte[i], HEX);
+      }
+      cardID.toUpperCase();
+      cardID.trim();
+      
+      Serial.print("Wykryto karte: ");
+      Serial.println(cardID);
+
+      cardReadSuccess = true;
+      
+      rfid.PICC_HaltA();
+      rfid.PCD_StopCrypto1();
+    }
+  }
+
+  // --- OBSŁUGA EKRANU I DOTYKU ---
+  enableTouchSPI();
+
+  if (cardReadSuccess) {
+    handleAuthorization(cardID, tft);
+    // Po zakończeniu autoryzacji, zresetuj stan
+    waitingForCard = true;
+    resetTextCycle();
+    cardID = "";
+  } else if (waitingForCard && !keypadActive) {
+    // Aktualizuj ekran oczekiwania
+    updateWaitingScreen();
+  }
+
+  // Sprawdź dotyk
+  uint16_t x, y;
+  bool is_pressed = tft.getTouch(&x, &y);
+  if (is_pressed) {
+    if (keypadActive) {
+      handleKeypad(is_pressed, x, y);
+    } else if (waitingForCard) {
+      // Dotknięcie w trybie oczekiwania przełącza na klawiaturę
+      keypadActive = true;
+      waitingForCard = false;
+      drawKeypad();
+      delay(200); // prosty debounce
+    }
+  } else {
+    if(keypadActive) {
+      handleKeypad(is_pressed, 0, 0);
+    }
+  }
+  
+  delay(10); // Krótkie opóźnienie dla stabilności pętli
+}
+
+void handleKeypadInput(String input) {
+  if (input == "OK") {
+    Serial.print("Otrzymano PESEL: ");
+    Serial.println(enteredPESEL);
+    
+    enableTouchSPI(); // Upewnij się, że SPI jest dla TFT
+    handleAuthorization(enteredPESEL, tft);
+
+    // Po obsłudze, wróć do ekranu oczekiwania
+    keypadActive = false;
+    waitingForCard = true;
+    resetTextCycle();
+    enteredPESEL = ""; // Wyczyść PESEL
+  } else if (input == "CANCEL") {
+    keypadActive = false;
+    waitingForCard = true;
+    resetTextCycle();
+    enteredPESEL = ""; // Wyczyść PESEL
   }
 }

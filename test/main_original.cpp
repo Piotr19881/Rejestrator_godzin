@@ -42,7 +42,7 @@ void setup() {
 
   // --- TEST KOMUNIKACJI Z ESP-CAM ---
   Serial.println("0. Test komunikacji z ESP-CAM...");
-  Serial2.begin(115200); // Inicjalizacja Serial2 dla ESP-CAM (RX:16, TX:17)
+  Serial2.begin(115200, SERIAL_8N1, 16, 17); 
   Serial.println("Serial2 zainicjalizowany (RX:16, TX:17, 115200 baud)");
   delay(500);
   
