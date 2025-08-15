@@ -1,6 +1,7 @@
 #include "local_communication.h"
 #include "dual_debug.h"
 #include "cards_mapping.h"
+#include "led.h"
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 
@@ -81,9 +82,15 @@ void displayAuthorizationScreen(TFT_eSPI &tft) {
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.drawString("Autoryzacja...", tft.width() / 2, tft.height() / 2, 4);
+    
+    // Włącz LED podczas weryfikacji
+    ledOn();
 }
 
 void displayResultScreen(TFT_eSPI &tft, const String& message, uint16_t color) {
+    // Wyłącz LED po zakończeniu weryfikacji
+    ledOff();
+    
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(color, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
@@ -234,6 +241,7 @@ void handleAuthorization(String id, TFT_eSPI &tft) {
 
     if (response.startsWith("{denide}")) {
         Serial.println("Autoryzacja ODRZUCONA przez ESP-CAM");
+        
         displayResultScreen(tft, "Odrzucono", TFT_RED);
     } else if (response.startsWith("{confirm;")) {
         Serial.println("Autoryzacja ZAAKCEPTOWANA przez ESP-CAM");

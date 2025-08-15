@@ -6,6 +6,8 @@
 #include "keypad.h"
 #include "local_communication.h"
 #include "cards_mapping.h"
+#include "buzzer.h"
+#include "led.h"
 
 // TFT_eSPI: piny VSPI ustawione w User_Setup.h
 TFT_eSPI tft = TFT_eSPI();
@@ -137,6 +139,23 @@ void setup() {
     ; // Czekaj na połączenie z portem szeregowym
   }
   Serial.println("=== Rozpoczynam konfiguracje ===");
+
+  // --- INICJALIZACJA LED ---
+  Serial.println("0.0. Inicjalizacja LED GPIO32...");
+  initLED();
+  
+  // Test LED
+  Serial.println("Test LED...");
+  ledBlink(3, 200);
+  delay(500);
+
+  // --- INICJALIZACJA BUZZER ---
+  Serial.println("0.1. Inicjalizacja buzzer GPIO26...");
+  initBuzzer();
+  
+  // Buzzer gotowy do odbioru komend z ESP32-CAM
+  Serial.println("Buzzer gotowy - czeka na komendy z ESP32-CAM");
+  delay(500);
 
   // --- INICJALIZACJA KOMUNIKACJI Z ESP-CAM ---
   Serial.println("0. Inicjalizacja komunikacji z ESP-CAM...");
@@ -273,6 +292,9 @@ void loop() {
           Serial.println("*** ODPOWIEDŹ AUTORYZACYJNA ***");
         } else if (receivedData.indexOf("pong") >= 0 || receivedData.indexOf("ready") >= 0) {
           Serial.println("*** SYGNAŁ GOTOWOŚCI ESP-CAM ***");
+        } else if (receivedData.indexOf("beep1") >= 0 || receivedData.indexOf("beep2") >= 0 || receivedData.indexOf("beep3") >= 0) {
+          Serial.println("*** KOMENDA BUZZER ***");
+          processBuzzerCommand(receivedData);
         } else if (receivedData.startsWith("ets Jul") || receivedData.startsWith("rst:")) {
           Serial.println("(ESP-CAM restart - ignoruję)");
         } else if (receivedData.startsWith("WiFi") || receivedData.indexOf("connected") >= 0) {
@@ -308,10 +330,31 @@ void loop() {
       Serial.print(dataToSend.length());
       Serial.println(" bajtów");
       
-      Serial2.println(dataToSend);
-      Serial2.flush();
-      Serial.println("Wysłano! Resetuję licznik RX...");
-      rxCounter = 0; // Reset licznika przy nowej wiadomości
+      // Sprawdź czy to komenda buzzer do testowania
+      if (dataToSend.indexOf("beep") >= 0) {
+        Serial.println("*** TEST BUZZER LOKALNIE ***");
+        processBuzzerCommand(dataToSend);
+      } else if (dataToSend.indexOf("led") >= 0) {
+        Serial.println("*** TEST LED LOKALNIE ***");
+        if (dataToSend == "led_on") {
+          Serial.println("LED ON");
+          ledOn();
+        } else if (dataToSend == "led_off") {
+          Serial.println("LED OFF");
+          ledOff();
+        } else if (dataToSend == "led_blink") {
+          Serial.println("LED BLINK x5");
+          ledBlink(5, 300);
+        } else {
+          Serial.println("Komendy LED: led_on, led_off, led_blink");
+        }
+      } else {
+        // Wyślij do ESP32-CAM
+        Serial2.println(dataToSend);
+        Serial2.flush();
+        Serial.println("Wysłano! Resetuję licznik RX...");
+        rxCounter = 0; // Reset licznika przy nowej wiadomości
+      }
     }
   }
   
