@@ -11,6 +11,7 @@
 
 #include "keypad.h"
 #include "screens.h"
+#include "local_communication.h"
 #include <TFT_eSPI.h>
 
 // Keypad start position, key sizes and spacing
