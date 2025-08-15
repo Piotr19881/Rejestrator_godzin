@@ -9,6 +9,8 @@ void testPingESPCAM(TFT_eSPI &tft);
 
 // Funkcje pomocnicze
 String parseESPCamResponse(String response);
+String mapCardIDFormat(String cardID);
+bool isNumeric(String str);
 
 // Funkcje ekranowe  
 void displayAuthorizationScreen(TFT_eSPI &tft);

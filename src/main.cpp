@@ -5,6 +5,7 @@
 #include "screens.h"
 #include "keypad.h"
 #include "local_communication.h"
+#include "cards_mapping.h"
 
 // TFT_eSPI: piny VSPI ustawione w User_Setup.h
 TFT_eSPI tft = TFT_eSPI();
@@ -31,6 +32,103 @@ void enableTouchSPI() {
 void enableRFIDSPI() {
   SPI.end();
   SPI.begin(14, 12, 13, 22); // Twoje piny RFID
+}
+
+// Funkcja konwersji RFID hex na różne formaty
+String parseCardID(String rawID) {
+  rawID.trim();
+  
+  // Usuń spacje z hex ID
+  String hexID = rawID;
+  hexID.replace(" ", "");
+  hexID.toUpperCase();
+  
+  Serial.println("=== PARSOWANIE KARTY ===");
+  Serial.print("Raw ID: ");
+  Serial.println(rawID);
+  Serial.print("Hex bez spacji: ");
+  Serial.println(hexID);
+  
+  // Spróbuj mapować przez tablicę
+  String mappedPESEL = mapRFIDtoPESEL(hexID);
+  
+  // Sprawdź czy mapowanie się udało (czy zwrócono PESEL)
+  if (mappedPESEL != hexID && mappedPESEL.length() == 11) {
+    Serial.print("Zmapowano na PESEL: ");
+    Serial.println(mappedPESEL);
+    Serial.println("========================");
+    return mappedPESEL;
+  }
+  
+  // Konwersja hex na decimal (alternatywna metoda)
+  String decimalID = "";
+  if (hexID.length() >= 8 && hexID.length() <= 14) { 
+    // Konwertuj hex na liczbę całkowitą, potem na string
+    unsigned long hexValue = 0;
+    for (int i = 0; i < hexID.length() && i < 8; i++) { // Max 8 znaków hex = 32 bity
+      char c = hexID.charAt(i);
+      if (c >= '0' && c <= '9') {
+        hexValue = (hexValue << 4) + (c - '0');
+      } else if (c >= 'A' && c <= 'F') {
+        hexValue = (hexValue << 4) + (c - 'A' + 10);
+      }
+    }
+    decimalID = String(hexValue);
+  }
+  
+  Serial.print("Decimal: ");
+  Serial.println(decimalID);
+  
+  // Sprawdź czy decimal ma 11 cyfr (jak PESEL)
+  if (decimalID.length() == 11) {
+    Serial.println("Format: PESEL-like (11 cyfr)");
+    Serial.println("========================");
+    return decimalID;
+  }
+  
+  // Jeśli nic nie pasuje, zwróć hex bez spacji
+  Serial.println("Format: HEX (bez mapowania)");
+  Serial.println("========================");
+  return hexID;
+}
+
+// Ulepszona funkcja odczytu karty RFID
+String readRFIDCard() {
+  String cardData = "";
+  
+  // Sprawdź czy jest nowa karta
+  if (!rfid.PICC_IsNewCardPresent()) {
+    return "";
+  }
+  
+  // Wybierz kartę
+  if (!rfid.PICC_ReadCardSerial()) {
+    return "";
+  }
+  
+  // Odczytaj UID karty
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (i > 0) cardData += " ";
+    if (rfid.uid.uidByte[i] < 0x10) cardData += "0";
+    cardData += String(rfid.uid.uidByte[i], HEX);
+  }
+  
+  cardData.toUpperCase();
+  
+  // Zatrzymaj komunikację z kartą
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+  
+  Serial.print("Karta wykryta (raw): ");
+  Serial.println(cardData);
+  
+  // Parsuj ID do właściwego formatu
+  String parsedID = parseCardID(cardData);
+  
+  Serial.print("ID do autoryzacji: ");
+  Serial.println(parsedID);
+  
+  return parsedID;
 }
 
 void setup() {
@@ -73,16 +171,24 @@ void setup() {
   delay(10);         // Krótka pauza dla stabilności
 
   Serial.println("Sprawdzanie wersji MFRC522...");
-  rfid.PCD_DumpVersionToSerial(); // Wyświetl szczegółowe informacje o wersji
-  
   byte version = rfid.PCD_ReadRegister(rfid.VersionReg);
+  Serial.print("Firmware Version: 0x");
+  Serial.print(version, HEX);
+  if (version == 0x91) Serial.println(" = MFRC522 clone");
+  else if (version == 0x92) Serial.println(" = MFRC522 v2");  
+  else if (version == 0x12) Serial.println(" = MFRC522 counterfeit");
+  else Serial.println(" = (unknown)");
+  
   if (version == 0x00 || version == 0xFF) {
-    Serial.println("BŁĄD KRYTYCZNY: Nie można nawiązać komunikacji z RC522.");
-    Serial.println("Sprawdź dokładnie połączenia pinów (SCK, MISO, MOSI, SS, RST)!");
+    Serial.println("BŁĄD: Brak komunikacji z MFRC522!");
+    Serial.println("Sprawdź połączenia SPI:");
+    Serial.println("MISO -> GPIO19, MOSI -> GPIO23, SCK -> GPIO18");
+    Serial.println("SS -> GPIO22, RST -> GPIO5");
     // Na tym etapie można by wyświetlić błąd na ekranie, ale bez SPI dla TFT to niemożliwe
     while(true); // Zatrzymaj program
+  } else {
+    Serial.println("Komunikacja z RC522 OK.");
   }
-  Serial.println("Komunikacja z RC522 OK.");
   Serial.println("--------------------------");
 
   // --- KROK 2: Inicjalizacja TFT i Kalibracja ---
@@ -219,22 +325,15 @@ void loop() {
   enableRFIDSPI();
   
   if (waitingForCard && !keypadActive) {
-    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
-      cardID = "";
-      for (byte i = 0; i < rfid.uid.size; i++) {
-        cardID += String(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
-        cardID += String(rfid.uid.uidByte[i], HEX);
-      }
-      cardID.toUpperCase();
-      cardID.trim();
-      
+    // Używaj nowej funkcji odczytu z parserem
+    String detectedCard = readRFIDCard();
+    
+    if (detectedCard.length() > 0) {
       Serial.print("Wykryto karte: ");
-      Serial.println(cardID);
+      Serial.println(detectedCard);
 
       cardReadSuccess = true;
-      
-      rfid.PICC_HaltA();
-      rfid.PCD_StopCrypto1();
+      cardID = detectedCard;
     }
   }
 

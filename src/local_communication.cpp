@@ -1,5 +1,6 @@
 #include "local_communication.h"
 #include "dual_debug.h"
+#include "cards_mapping.h"
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 
@@ -39,6 +40,42 @@ String parseESPCamResponse(String response) {
     return ""; // Nieznany/ignorowany format
 }
 
+// Funkcja pomocnicza sprawdzania czy string to liczba
+bool isNumeric(String str) {
+  for (int i = 0; i < str.length(); i++) {
+    if (!isDigit(str.charAt(i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Funkcja mapowania różnych formatów ID
+String mapCardIDFormat(String cardID) {
+  // Sprawdź czy to już jest PESEL (11 cyfr)
+  if (cardID.length() == 11 && isNumeric(cardID)) {
+    return cardID; // To już jest PESEL
+  }
+  
+  // Użyj funkcji mapowania z cards_mapping.h
+  String mappedPESEL = mapRFIDtoPESEL(cardID);
+  
+  if (mappedPESEL != cardID) {
+    Serial.print("[ID-MAPPING] RFID ");
+    Serial.print(cardID);
+    Serial.print(" -> PESEL ");
+    Serial.println(mappedPESEL);
+    return mappedPESEL;
+  }
+  
+  Serial.print("[ID-MAPPING] Brak mapowania dla ");
+  Serial.print(cardID);
+  Serial.println(" - używam oryginalnego ID");
+  
+  // Jeśli nie ma mapowania, zwróć oryginalny ID
+  return cardID;
+}
+
 void displayAuthorizationScreen(TFT_eSPI &tft) {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -76,11 +113,15 @@ void handleAuthorization(String id, TFT_eSPI &tft) {
         return;
     }
     
+    // Mapuj ID na właściwy format (RFID -> PESEL)
+    String mappedID = mapCardIDFormat(id);
+    
     // Utwórz dual debugger (TFT + Serial jednocześnie)
     globalDebugger = new DualDebug(&tft);
     globalDebugger->clear();
     globalDebugger->addTimestamp("=== AUTORYZACJA START ===");
-    globalDebugger->println("ID: " + id);
+    globalDebugger->println("ID oryginalny: " + id);
+    globalDebugger->println("ID zmapowany: " + mappedID);
     globalDebugger->println("UART: RX:16, TX:17 @ 115200");
     globalDebugger->println("ESP32-CAM: GOTOWY ✓");
     
@@ -96,7 +137,7 @@ void handleAuthorization(String id, TFT_eSPI &tft) {
 
     // Tworzenie JSON do wysłania
     StaticJsonDocument<200> doc;
-    doc["authorization"] = id;
+    doc["authorization"] = mappedID; // Używaj zmapowanego ID
     String output;
     serializeJson(doc, output);
 

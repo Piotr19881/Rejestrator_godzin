@@ -122,3 +122,74 @@ bool isScreenTouched(uint16_t x, uint16_t y) {
   // Sprawdź czy dotknięto ekran (dowolne miejsce poza obszarem przycisku)
   return (x > 0 && x < 240 && y > 0 && y < 320);
 }
+
+void showLoadingScreen(TFT_eSPI& display, String message) {
+  display.fillScreen(TFT_BLACK);
+  
+  // Tytuł
+  display.setTextColor(TFT_YELLOW);
+  display.setTextSize(2);
+  display.setTextDatum(TC_DATUM);
+  display.drawString("PROSZĘ CZEKAĆ", display.width()/2, 50, 2);
+  
+  // Wiadomość
+  display.setTextColor(TFT_WHITE);
+  display.setTextSize(1);
+  display.setTextDatum(TC_DATUM);
+  display.drawString(message, display.width()/2, 100, 2);
+  
+  // Animowany wskaźnik ładowania
+  static int loadingDots = 0;
+  String dots = "";
+  for (int i = 0; i <= loadingDots; i++) {
+    dots += ".";
+  }
+  display.drawString(dots, display.width()/2, 120, 2);
+  loadingDots = (loadingDots + 1) % 4;
+}
+
+void showWelcomeScreen(TFT_eSPI& display, String userName) {
+  display.fillScreen(TFT_GREEN);
+  
+  // Nagłówek
+  display.setTextColor(TFT_WHITE);
+  display.setTextSize(2);
+  display.setTextDatum(TC_DATUM);
+  display.drawString("WITAMY!", display.width()/2, 80, 4);
+  
+  // Nazwa użytkownika
+  display.setTextColor(TFT_BLACK);
+  display.setTextSize(1);
+  display.setTextDatum(TC_DATUM);
+  display.drawString(userName, display.width()/2, 160, 2);
+  
+  // Czas
+  display.setTextColor(TFT_WHITE);
+  display.drawString("Czas: " + String(millis()/1000) + "s", display.width()/2, 200, 2);
+}
+
+void showErrorScreen(TFT_eSPI& display, String title, String message) {
+  display.fillScreen(TFT_RED);
+  
+  // Tytuł błędu
+  display.setTextColor(TFT_WHITE);
+  display.setTextSize(2);
+  display.setTextDatum(TC_DATUM);
+  display.drawString(title, display.width()/2, 80, 2);
+  
+  // Wiadomość błędu
+  display.setTextColor(TFT_YELLOW);
+  display.setTextSize(1);
+  display.setTextDatum(TC_DATUM);
+  display.drawString(message, display.width()/2, 140, 2);
+  
+  // Instrukcja
+  display.setTextColor(TFT_WHITE);
+  display.drawString("Spróbuj ponownie", display.width()/2, 200, 2);
+}
+
+void showMainScreen(TFT_eSPI& display) {
+  // Rozpocznij normalny cykl tekstów motywacyjnych
+  initScreens();
+  updateWaitingScreen();
+}

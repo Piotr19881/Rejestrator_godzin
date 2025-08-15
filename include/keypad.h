@@ -11,5 +11,6 @@ void handleKeypad(bool pressed, uint16_t x, uint16_t y);
 void executeKeyAction(int buttonIndex);
 void updatePESELDisplay();
 void showKeypadStatus(const char* msg);
+String getKeypadInput(uint16_t x, uint16_t y);
 
 #endif

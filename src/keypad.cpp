@@ -242,3 +242,45 @@ void updatePESELDisplay() {
   tft.setTextDatum(BR_DATUM);
   tft.drawString(counter, DISP_X + DISP_W - 5, DISP_Y + DISP_H - 5);
 }
+
+// Funkcja dla uproszczonej obsługi keypad w main.cpp
+String getKeypadInput(uint16_t x, uint16_t y) {
+  // Sprawdź który przycisk został naciśnięty
+  for (uint8_t b = 0; b < 15; b++) {
+    if (key[b].contains(x, y)) {
+      return String(keyLabel[b]);
+    }
+  }
+  return ""; // Nie naciśnięto żadnego przycisku
+}
+
+// Funkcja obsługi input z main.cpp
+void handleKeypadInput(String input, TFT_eSPI& display) {
+  if (input == "OK") {
+    if (enteredPESEL.length() == PESEL_LEN) {
+      Serial.print("Otrzymano PESEL: ");
+      Serial.println(enteredPESEL);
+      
+      // Przełącz na TFT
+      showLoadingScreen(display, "Weryfikacja PESEL...");
+      
+      // Wywołaj autoryzację
+      handleAuthorization(enteredPESEL, display);
+
+      // Po obsłudze, wróć do ekranu oczekiwania
+      extern bool keypadActive, waitingForCard;
+      keypadActive = false;
+      waitingForCard = true;
+      showMainScreen(display);
+      enteredPESEL = ""; // Wyczyść PESEL
+    } else {
+      showKeypadStatus("PESEL musi mieć 11 cyfr!");
+    }
+  } else if (input == "CANCEL" || input == "Clr") {
+    extern bool keypadActive, waitingForCard;
+    keypadActive = false;
+    waitingForCard = true;
+    showMainScreen(display);
+    enteredPESEL = ""; // Wyczyść PESEL
+  }
+}
