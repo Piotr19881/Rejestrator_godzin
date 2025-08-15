@@ -7,3 +7,7 @@ void syncPracownicyFromGoogle(const String& google_script_url);
 void syncAlarmsFromGoogle(const String& google_script_url);
 unsigned long getUpdateIntervalFromAlarms();
 void actualizeSheets(const String& google_script_url);
+
+// Funkcje do obsługi zdjęć Google Drive
+void uploadPhotosToGoogleDrive(const String& google_script_url, const String& folder_id);
+String uploadSinglePhotoToGoogleDrive(const String& google_script_url, const String& folder_id, const String& photoPath);

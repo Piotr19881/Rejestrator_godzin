@@ -6,11 +6,13 @@
 
 #include "actualization_logic.h"
 #include "communication_logic.h"
+#include "registration_logic.h"  // DODANE: dla funkcji kamery
 
 // Konfiguracja WiFi
 String wifi_ssid = "";
 String wifi_password = "";
 String google_script_url = "";
+String google_drive_folder_id = ""; // DODANE: dla upload zdjęć na Google Drive
 
 // Konfiguracja NTP
 const char* ntpServer = "pool.ntp.org";
@@ -51,6 +53,13 @@ void setup() {
   initSDCard();
   sd_initialized = true;
   delay(500);
+
+  // KROK 2.5: Inicjalizacja kamery - DODANE!
+  if (initCameraOnDemand()) {
+    // Kamera zainicjalizowana pomyślnie
+    createPhotosDirectory(); // Stwórz folder photos jeśli nie istnieje
+  }
+  delay(500);
   
   // KROK 3: Wczytanie konfiguracji
   if (loadConfig()) {
@@ -85,19 +94,9 @@ void setup() {
   // KLUCZOWY MOMENT: Wysyłamy sygnał gotowości do ESP WROOM
   delay(1000); // Krótka pauza przed sygnałem
   
-  if (wifi_connected && sync_attempted) {
-    // TYLKO JSON - BEZ LOGÓW DEBUGOWANIA!
-    Serial.println("{\"ready\":\"online\",\"wifi\":true,\"sync\":true}");
-    Serial.flush();
-  } else if (wifi_attempted && !wifi_connected) {
-    // TYLKO JSON - BEZ LOGÓW DEBUGOWANIA!
-    Serial.println("{\"ready\":\"offline\",\"wifi\":false,\"sync\":false}");
-    Serial.flush();
-  } else {
-    // TYLKO JSON - BEZ LOGÓW DEBUGOWANIA!
-    Serial.println("{\"ready\":\"limited\",\"wifi\":false,\"sync\":false}");
-    Serial.flush();
-  }
+  // ESP WROOM oczekuje prostego sygnału {"ready"}
+  Serial.println("{\"ready\"}");
+  Serial.flush();
 }
 
 void loop() {
@@ -134,6 +133,11 @@ void loop() {
       
       syncPracownicyFromGoogle(google_script_url);
       syncAlarmsFromGoogle(google_script_url);
+      
+      // Upload zdjęć do Google Drive
+      if (google_drive_folder_id != "") {
+        uploadPhotosToGoogleDrive(google_script_url, google_drive_folder_id);
+      }
       
       lastSync = millis();
       // TYLKO JSON - BEZ LOGÓW DEBUGOWANIA!

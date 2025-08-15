@@ -8,6 +8,8 @@
 bool initCameraOnDemand();
 void deinitCamera();
 void takePhoto(String userId);
+void createPhotosDirectory();
+String capturePhotoToFile(String userId);
 
 // Funkcje zapisu logów
 void logWorkEntry(LogEntry entry);

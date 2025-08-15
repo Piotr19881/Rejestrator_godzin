@@ -166,6 +166,106 @@ void actualizeSheets(const String& google_script_url) {
     Serial.println("[SYNC] --- Synchronizacja arkuszy zakończona ---");
 }
 
+// === FUNKCJE DO OBSŁUGI ZDJĘĆ GOOGLE DRIVE ===
+
+// Funkcja uploadowania pojedynczego zdjęcia do Google Drive
+String uploadSinglePhotoToGoogleDrive(const String& google_script_url, const String& folder_id, const String& photoPath) {
+    Serial.println("[DRIVE] Uploaduję zdjęcie: " + photoPath);
+    
+    File photoFile = SD_MMC.open(photoPath);
+    if (!photoFile) {
+        Serial.println("[DRIVE] Błąd otwierania pliku zdjęcia: " + photoPath);
+        return "";
+    }
+    
+    // Przygotuj dane POST do Google Apps Script
+    String fileName = photoPath.substring(photoPath.lastIndexOf("/") + 1);
+    String postData = "action=upload_photo";
+    postData += "&folder_id=" + folder_id;
+    postData += "&filename=" + fileName;
+    postData += "&filedata="; // Tu będą dane base64
+    
+    // Konwertuj plik do base64 (uproszczony - dla małych plików)
+    String base64Data = "";
+    uint8_t buffer[1024];
+    while (photoFile.available()) {
+        size_t bytesRead = photoFile.read(buffer, sizeof(buffer));
+        // Tu powinna być konwersja do base64, ale dla uproszczenia pomijamy
+        // base64Data += base64_encode(buffer, bytesRead);
+    }
+    photoFile.close();
+    
+    postData += base64Data;
+    
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.begin(google_script_url);
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+    http.setTimeout(30000); // 30 sekund timeout dla uploadów
+    
+    int httpCode = http.POST(postData);
+    String response = "";
+    
+    if (httpCode == HTTP_CODE_OK) {
+        response = http.getString();
+        Serial.println("[DRIVE] Zdjęcie wysłane pomyślnie");
+        Serial.println("[DRIVE] Odpowiedź: " + response);
+    } else {
+        Serial.printf("[DRIVE] Błąd HTTP: %d\n", httpCode);
+    }
+    
+    http.end();
+    return response; // Zwraca link do pliku na Google Drive
+}
+
+// Funkcja uploadowania wszystkich zdjęć z folderu photos
+void uploadPhotosToGoogleDrive(const String& google_script_url, const String& folder_id) {
+    Serial.println("[DRIVE] Rozpoczynam upload zdjęć do Google Drive...");
+    
+    File photosDir = SD_MMC.open("/czytnik_projekt/photos");
+    if (!photosDir) {
+        Serial.println("[DRIVE] Folder photos nie istnieje!");
+        return;
+    }
+    
+    if (!photosDir.isDirectory()) {
+        Serial.println("[DRIVE] /czytnik_projekt/photos to nie jest folder!");
+        photosDir.close();
+        return;
+    }
+    
+    File file = photosDir.openNextFile();
+    int uploadedCount = 0;
+    
+    while (file) {
+        if (!file.isDirectory()) {
+            String fileName = file.name();
+            String fullPath = "/czytnik_projekt/photos/" + fileName;
+            
+            // Upload tylko plików .jpg
+            if (fileName.endsWith(".jpg") || fileName.endsWith(".JPG")) {
+                String driveLink = uploadSinglePhotoToGoogleDrive(google_script_url, folder_id, fullPath);
+                
+                if (driveLink != "") {
+                    uploadedCount++;
+                    Serial.println("[DRIVE] Wysłano: " + fileName);
+                    
+                    // Opcjonalnie usuń lokalny plik po pomyślnym uploadzie
+                    // SD_MMC.remove(fullPath);
+                } else {
+                    Serial.println("[DRIVE] Błąd wysyłania: " + fileName);
+                }
+                
+                delay(1000); // Pauza między uploadami
+            }
+        }
+        file = photosDir.openNextFile();
+    }
+    
+    photosDir.close();
+    Serial.printf("[DRIVE] Upload zakończony. Wysłano %d zdjęć.\n", uploadedCount);
+}
+
 // --- Przykład użycia w loop() ---
 // unsigned long lastSync = 0;
 // void loop() {

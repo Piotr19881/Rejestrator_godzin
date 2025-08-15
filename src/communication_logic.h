@@ -34,6 +34,9 @@ void handleCommunication();
 // Weryfikacja użytkownika w arkuszu Pracownicy_data.csv
 VerificationResult verifyUserInSheet(String userId);
 
+// NOWA FUNKCJA: Konwersja formatu RFID ze spacjami na format bez spacji
+String convertRFIDFormat(String rfidWithSpaces);
+
 // Pobranie aktualnego czasu w formacie do arkusza
 String getCurrentTimestamp();
 

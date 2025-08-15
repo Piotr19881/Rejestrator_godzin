@@ -134,8 +134,13 @@ void handleAuthorizationRequest(String userId) {
         pendingLogEntry.action = "WEJŚCIE";
         pendingLogEntry.isSuccessful = true;
         
-        // Zrób zdjęcie
-        takePhoto(userId);
+        // Zrób zdjęcie i zapisz do pliku
+        String photoPath = capturePhotoToFile(userId);
+        if (photoPath != "") {
+            logCommunication("PHOTO_SAVED", "Ścieżka: " + photoPath);
+        } else {
+            logCommunication("PHOTO_ERROR", "Nie udało się zapisać zdjęcia");
+        }
         
         // Zapisz log
         logWorkEntry(pendingLogEntry);
@@ -164,88 +169,165 @@ void handleAuthorizationRequest(String userId) {
     }
 }
 
+// === FUNKCJE WERYFIKACJI UŻYTKOWNIKÓW ===
+
+// Funkcja konwersji RFID ze spacjami na format bez spacji
+String convertRFIDFormat(String rfidWithSpaces) {
+    String result = "";
+    for (int i = 0; i < rfidWithSpaces.length(); i++) {
+        char c = rfidWithSpaces.charAt(i);
+        if (c != ' ') {
+            // Konwertuj pojedynczy znak na wielkie litery
+            if (c >= 'a' && c <= 'z') {
+                c = c - 'a' + 'A';
+            }
+            result += c;
+        }
+    }
+    return result;
+}
+
 VerificationResult verifyUserInSheet(String userId) {
     VerificationResult result;
     result.isValid = false;
     result.isActive = false;
     result.userId = userId;
     result.errorMessage = "Nieznany błąd";
-    
+
     // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
     logCommunication("VERIFY_REQUEST", "ID = " + userId);
-    
-    File file = SD_MMC.open("/czytnik_projekt/data/Pracownicy_data.csv");
+
+    // Konwertuj RFID do formatu bez spacji (jeśli zawiera spacje)
+    String searchId = userId;
+    if (userId.indexOf(' ') >= 0) {
+        searchId = convertRFIDFormat(userId);
+        logCommunication("RFID_CONVERTED", userId + " -> " + searchId);
+    }
+
+    // Sprawdź lokalny plik CSV - nowa struktura: ID,Imie,Nazwisko,Pesel,RFID1,RFID2,RFID3,Status
+    File file = SD_MMC.open("/czytnik_projekt/data/Pracownicy_data.csv", FILE_READ);
     if (!file) {
         result.errorMessage = "Nie można otworzyć pliku Pracownicy_data.csv";
         // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
         logCommunication("FILE_ERROR", result.errorMessage);
         return result;
     }
-    
+
+    // Sprawdź rozmiar pliku
+    size_t fileSize = file.size();
+    logCommunication("FILE_SIZE", "Pracownicy_data.csv ma " + String(fileSize) + " bajtów");
+
     // Odczytaj nagłówek
     String header = file.readStringUntil('\n');
     header.trim();
     // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
     logCommunication("CSV_HEADER", header);
-    
-    // Szukaj użytkownika
+
+    int linesRead = 0;
+    // Szukaj użytkownika w CSV
     while (file.available()) {
         String line = file.readStringUntil('\n');
         line.trim();
-        
+        linesRead++;
+
         if (line.length() == 0) continue;
-        
-        // Parsowanie CSV: ID,Imię,Nazwisko,Dział,Status
-        int firstComma = line.indexOf(',');
-        if (firstComma == -1) continue;
-        
-        String csvUserId = line.substring(0, firstComma);
-        csvUserId.trim();
-        
-        if (csvUserId.equals(userId)) {
+
+        // LOG pierwszych kilku linii dla debugowania
+        if (linesRead <= 3) {
+            logCommunication("CSV_LINE_" + String(linesRead), line);
+        }
+
+        // Parsuj CSV: ID,Imie,Nazwisko,Pesel,RFID1,RFID2,RFID3,Status
+        int comma1 = line.indexOf(',');
+        int comma2 = line.indexOf(',', comma1 + 1);
+        int comma3 = line.indexOf(',', comma2 + 1);
+        int comma4 = line.indexOf(',', comma3 + 1);
+        int comma5 = line.indexOf(',', comma4 + 1);
+        int comma6 = line.indexOf(',', comma5 + 1);
+        int comma7 = line.indexOf(',', comma6 + 1);
+
+        if (comma7 == -1) {
+            logCommunication("INVALID_LINE", "Niepełny wiersz: " + line);
+            continue; // Niepełny wiersz
+        }
+
+        String csvId = line.substring(0, comma1);
+        csvId.trim();
+        String imie = line.substring(comma1 + 1, comma2);
+        imie.trim();
+        String nazwisko = line.substring(comma2 + 1, comma3);
+        nazwisko.trim();
+        String pesel = line.substring(comma3 + 1, comma4);
+        pesel.trim();
+        String rfid1 = line.substring(comma4 + 1, comma5);
+        rfid1.trim();
+        String rfid2 = line.substring(comma5 + 1, comma6);
+        rfid2.trim();
+        String rfid3 = line.substring(comma6 + 1, comma7);
+        rfid3.trim();
+        String status = line.substring(comma7 + 1);
+        status.trim();
+
+        // LOG TYLKO DO SD - szczegółowe porównania
+        logCommunication("CSV_COMPARE", "Szukane: " + searchId + " | CSV_RFID1: " + rfid1 + " | CSV_RFID2: " + rfid2 + " | CSV_RFID3: " + rfid3);
+
+        // Sprawdź wszystkie możliwe dopasowania
+        bool userFound = false;
+        String matchType = "";
+
+        // 1. Sprawdź PESEL (dziesiętny)
+        if (searchId == pesel) {
+            userFound = true;
+            matchType = "PESEL";
+        }
+        // 2. Sprawdź RFID1 (hex bez spacji)
+        else if (searchId.equalsIgnoreCase(rfid1)) {
+            userFound = true;
+            matchType = "RFID1";
+        }
+        // 3. Sprawdź RFID2 (hex bez spacji)
+        else if (searchId.equalsIgnoreCase(rfid2)) {
+            userFound = true;
+            matchType = "RFID2";
+        }
+        // 4. Sprawdź RFID3 (hex bez spacji)
+        else if (searchId.equalsIgnoreCase(rfid3)) {
+            userFound = true;
+            matchType = "RFID3";
+        }
+
+        if (userFound) {
             // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
-            logCommunication("USER_FOUND", line);
+            logCommunication("USER_FOUND", line + " [Match: " + matchType + "]");
+
+            result.isValid = true;
+            result.name = imie;
+            result.surname = nazwisko;
+            result.department = ""; // Brak działu w nowej strukturze
             
-            // Parsuj pozostałe pola
-            int secondComma = line.indexOf(',', firstComma + 1);
-            int thirdComma = line.indexOf(',', secondComma + 1);
-            int fourthComma = line.indexOf(',', thirdComma + 1);
-            
-            if (secondComma != -1 && thirdComma != -1 && fourthComma != -1) {
-                result.name = line.substring(firstComma + 1, secondComma);
-                result.surname = line.substring(secondComma + 1, thirdComma);
-                result.department = line.substring(thirdComma + 1, fourthComma);
-                String status = line.substring(fourthComma + 1);
-                
-                result.name.trim();
-                result.surname.trim();
-                result.department.trim();
-                status.trim();
-                
-                result.isValid = true;
-                
-                if (status.equalsIgnoreCase("AKTYWNY") || status.equalsIgnoreCase("aktywny")) {
-                    result.isActive = true;
-                    result.errorMessage = "";
-                } else {
-                    result.isActive = false;
-                    result.errorMessage = "Użytkownik nieaktywny (status: " + status + ")";
-                }
+            // Sprawdź status aktywności
+            if (status == "1") {
+                result.isActive = true;
             } else {
-                result.errorMessage = "Błędny format danych w CSV";
+                result.isActive = false;
+                result.errorMessage = "Użytkownik nieaktywny (status: " + status + ")";
             }
-            break;
+            
+            file.close();
+            return result;
         }
     }
-    
+
     file.close();
-    
+
+    logCommunication("CSV_TOTAL_LINES", "Przeczytano " + String(linesRead) + " linii");
+
     if (!result.isValid) {
         result.errorMessage = "Użytkownik o ID " + userId + " nie został znaleziony";
         // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
         logCommunication("USER_NOT_FOUND", result.errorMessage);
     }
-    
+
     return result;
 }
 

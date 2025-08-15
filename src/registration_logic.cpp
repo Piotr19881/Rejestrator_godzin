@@ -1,4 +1,5 @@
 #include "registration_logic.h"
+#include "communication_logic.h" // Dla getCurrentTimestamp()
 #include "FS.h"
 #include "SD_MMC.h"
 #include "esp_camera.h"
@@ -148,4 +149,76 @@ String formatExceptionLine(LogEntry entry, String errorMessage) {
            entry.surname + "," + 
            entry.action + "," + 
            errorMessage;
+}
+
+// Funkcja do tworzenia folderu photos
+void createPhotosDirectory() {
+    // Sprawdź czy karta SD jest dostępna
+    if (!SD_MMC.cardType()) {
+        Serial.println("[PHOTO] Karta SD nie jest zainicjalizowana - pomijam tworzenie folderu");
+        return;
+    }
+    
+    // Najpierw upewnij się że główny folder istnieje
+    File mainDir = SD_MMC.open("/czytnik_projekt");
+    if (!mainDir) {
+        if (SD_MMC.mkdir("/czytnik_projekt")) {
+            Serial.println("[PHOTO] Utworzono główny folder /czytnik_projekt");
+        } else {
+            Serial.println("[PHOTO] Błąd tworzenia głównego folderu!");
+            return;
+        }
+    } else {
+        mainDir.close();
+    }
+    
+    // Teraz sprawdź czy folder photos istnieje
+    File photosDir = SD_MMC.open("/czytnik_projekt/photos");
+    if (!photosDir) {
+        // Utwórz folder photos
+        if (SD_MMC.mkdir("/czytnik_projekt/photos")) {
+            Serial.println("[PHOTO] Utworzono folder /czytnik_projekt/photos");
+        } else {
+            Serial.println("[PHOTO] Błąd tworzenia folderu photos!");
+        }
+    } else {
+        Serial.println("[PHOTO] Folder /czytnik_projekt/photos już istnieje");
+        photosDir.close();
+    }
+}
+
+// Funkcja do robienia zdjęcia i zapisywania do pliku
+String capturePhotoToFile(String userId) {
+    if (!esp_camera_sensor_get()) {
+        Serial.println("[PHOTO] Kamera nie jest zainicjalizowana!");
+        return "";
+    }
+    
+    // Pobierz timestamp
+    String timestamp = getCurrentTimestamp();
+    String fileName = "/czytnik_projekt/photos/" + userId + "_" + timestamp + ".jpg";
+    fileName.replace(":", "-");  // Zamień : na - w nazwie pliku
+    fileName.replace(" ", "_");  // Zamień spacje na _
+    
+    // Zrób zdjęcie
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("[PHOTO] Błąd przechwytywania zdjęcia!");
+        return "";
+    }
+    
+    // Zapisz zdjęcie do pliku
+    File file = SD_MMC.open(fileName, FILE_WRITE);
+    if (!file) {
+        Serial.println("[PHOTO] Błąd otwierania pliku: " + fileName);
+        esp_camera_fb_return(fb);
+        return "";
+    }
+    
+    file.write(fb->buf, fb->len);
+    file.close();
+    esp_camera_fb_return(fb);
+    
+    Serial.println("[PHOTO] Zdjęcie zapisane: " + fileName);
+    return fileName;
 }
