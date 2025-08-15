@@ -1,0 +1,5 @@
+wifi_ssid=Twoja_Siec_WiFi
+wifi_password=Twoje_Haslo_WiFi
+google_script_url=https://script.google.com/macros/s/AKfycbwdE8kWbfHhjKmSPKjyUhJKjNrfGDfJHlNXhbMKJgFYaU1XjLo9rrnTk-6YJBPebcz9/exec
+google_workers_sheet_id=1h5LkR9_wO2R3MmrA6Q_jbsHqOVvFAuDRi1YJB2pVSBQ
+google_alarms_updatas_sheet_id=1h5LkR9_wO2R3MmrA6Q_jbsHqOVvFAuDRi1YJB2pVSBQ

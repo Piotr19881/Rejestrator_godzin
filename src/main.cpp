@@ -3,6 +3,8 @@
 #include <FS.h>
 #include <SD_MMC.h>
 #include <time.h>
+#include <soc/soc.h>
+#include <soc/rtc_cntl_reg.h>
 
 #include "actualization_logic.h"
 #include "communication_logic.h"
@@ -39,57 +41,91 @@ void checkWiFiConnection();
 void syncTime();
 
 void setup() {
+  // KROK 0: Wyłączenie brownout detector i ustawienia zasilania
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Wyłącz brownout detector
+  setCpuFrequencyMhz(160); // Zmniejsz częstotliwość CPU dla stabilności zasilania
+  
   Serial.begin(115200);
   delay(2000);
   
-  // UWAGA: BRAK LOGÓW DEBUGOWANIA PRZEZ UART!
-  // Wszystkie logi inicjalizacji WYŁĄCZONE dla czystości protokołu z ESP WROOM
+  Serial.println("[MAIN] === ESP32-CAM STARTUJE ===");
+  Serial.println("[MAIN] Brownout detector wyłączony, CPU na 160MHz");
   
   // KROK 1: Inicjalizacja komunikacji z ESP WROOM (pierwszeństwo!)
+  Serial.println("[MAIN] Inicjalizacja komunikacji z ESP WROOM...");
   setupCommunicationLogic();
   delay(500);
   
   // KROK 2: Inicjalizacja karty SD
+  Serial.println("[MAIN] Inicjalizacja karty SD...");
   initSDCard();
   sd_initialized = true;
   delay(500);
 
   // KROK 2.5: Inicjalizacja kamery - DODANE!
+  Serial.println("[MAIN] Inicjalizacja kamery...");
   if (initCameraOnDemand()) {
-    // Kamera zainicjalizowana pomyślnie
+    Serial.println("[MAIN] Kamera zainicjalizowana pomyślnie");
     createPhotosDirectory(); // Stwórz folder photos jeśli nie istnieje
+  } else {
+    Serial.println("[MAIN] BŁĄD inicjalizacji kamery");
   }
   delay(500);
   
   // KROK 3: Wczytanie konfiguracji
+  Serial.println("[MAIN] Wczytywanie konfiguracji...");
   if (loadConfig()) {
     config_loaded = true;
+    Serial.println("[MAIN] Konfiguracja załadowana pomyślnie");
   } else {
     config_loaded = false;
+    Serial.println("[MAIN] BŁĄD wczytywania konfiguracji");
   }
   delay(500);
 
   // KROK 4: Połączenie z WiFi (z timeout)
   if (config_loaded) {
+    Serial.println("[MAIN] Próba połączenia z WiFi...");
+    delay(1000); // Dodatkowy delay przed WiFi
     connectToWiFi();
+  } else {
+    Serial.println("[MAIN] Pomijam WiFi - brak konfiguracji");
   }
   wifi_attempted = true;
-  delay(500);
+  delay(1000); // Zwiększony delay
   
   // KROK 5: Synchronizacja czasu i danych (jeśli WiFi)
   if (wifi_connected) {
+    Serial.println("[MAIN] WiFi połączony - rozpoczynam synchronizację...");
+    delay(500); // Delay przed synchronizacją
     syncTime();
+    delay(500);
+    Serial.println("[MAIN] Synchronizacja pracowników...");
     syncPracownicyFromGoogle(google_script_url);
+    delay(500);
+    Serial.println("[MAIN] Synchronizacja alarmów...");
     syncAlarmsFromGoogle(google_script_url);
     lastSync = millis();
     sync_attempted = true;
+    Serial.println("[MAIN] Synchronizacja zakończona");
   } else {
     sync_attempted = false;
+    Serial.println("[MAIN] Brak WiFi - pomijam synchronizację");
   }
-  delay(500);
+  delay(1000); // Zwiększony delay
 
   // KROK 6: Finalizacja i sygnał gotowości
   system_ready = true;
+  
+  Serial.println("[MAIN] === SYSTEM GOTOWY ===");
+  Serial.print("[MAIN] Status: SD=");
+  Serial.print(sd_initialized ? "OK" : "BŁĄD");
+  Serial.print(", Config=");
+  Serial.print(config_loaded ? "OK" : "BŁĄD");
+  Serial.print(", WiFi=");
+  Serial.print(wifi_connected ? "OK" : "BŁĄD");
+  Serial.print(", Sync=");
+  Serial.println(sync_attempted ? "OK" : "BŁĄD");
   
   // KLUCZOWY MOMENT: Wysyłamy sygnał gotowości do ESP WROOM
   delay(1000); // Krótka pauza przed sygnałem
@@ -241,14 +277,18 @@ bool loadConfig() {
 void connectToWiFi() {
   // BRAK LOGÓW DEBUGOWANIA PRZEZ UART!
   
+  // Ustawienia energooszczędne przed połączeniem WiFi
   WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_11dBm); // Zmniejsz moc nadawania WiFi
+  delay(500);
+  
   WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
   
   int attempts = 0;
   const int max_attempts = 20;
   
   while (WiFi.status() != WL_CONNECTED && attempts < max_attempts) {
-    delay(1000);
+    delay(1500); // Zwiększony delay dla stabilności zasilania
     attempts++;
   }
   
