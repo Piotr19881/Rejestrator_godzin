@@ -122,6 +122,9 @@ void handleAuthorizationRequest(String userId) {
         Serial.println(confirmResponse);
         Serial.flush();
         
+        // Wyślij sygnał dźwiękowy sukcesu (beep1)
+        sendBuzzerBeep1();
+        
         // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
         logCommunication("AUTH_SUCCESS", result.name + " " + result.surname);
         
@@ -151,6 +154,9 @@ void handleAuthorizationRequest(String userId) {
         // Użytkownik nieaktywny lub nie znaleziony - TYLKO JSON RESPONSE!
         Serial.println("{denide}");
         Serial.flush();
+        
+        // Wyślij sygnał dźwiękowy błędu (beep2)
+        sendBuzzerBeep2();
         
         // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
         logCommunication("AUTH_DENIED", result.errorMessage);
@@ -587,4 +593,56 @@ void sendSystemStatus() {
     Serial.flush();
     // LOG TYLKO DO SD - BEZ WYSYŁANIA PRZEZ UART!
     logCommunication("SYSTEM_STATUS_SENT", status);
+}
+
+// === FUNKCJE BUZZERA ===
+
+// Sukces autoryzacji - ciągły sygnał 0,5s
+void sendBuzzerBeep1() {
+    Serial.println("{\"beep1\"}");
+    Serial.flush();
+    logCommunication("BUZZER_BEEP1", "Sukces autoryzacji");
+}
+
+// Błąd autoryzacji - dwa piknięcia po 0,2s, przerwa 0,5s, ponownie dwa piknięcia
+void sendBuzzerBeep2() {
+    Serial.println("{\"beep2\"}");
+    Serial.flush();
+    logCommunication("BUZZER_BEEP2", "Błąd autoryzacji");
+}
+
+// Alarm typu 0 - trzy serie po 3 sygnały (0,3s każdy), przerwy 1s między seriami
+void sendBuzzerBeep3() {
+    Serial.println("{\"beep3\"}");
+    Serial.flush();
+    logCommunication("BUZZER_BEEP3", "Alarm typu 0");
+}
+
+// Uniwersalna funkcja wysyłania komend buzzera
+void sendBuzzerCommand(String beepType) {
+    if (beepType == "beep1") {
+        sendBuzzerBeep1();
+    } else if (beepType == "beep2") {
+        sendBuzzerBeep2();
+    } else if (beepType == "beep3") {
+        sendBuzzerBeep3();
+    } else {
+        logCommunication("BUZZER_ERROR", "Nieznany typ dźwięku: " + beepType);
+    }
+}
+
+// Funkcja testowa dla sprawdzenia wszystkich dźwięków buzzera
+void testBuzzerSounds() {
+    logCommunication("BUZZER_TEST", "Rozpoczynam test wszystkich dźwięków");
+    
+    delay(1000);
+    sendBuzzerBeep1(); // Test sukcesu
+    delay(3000);
+    
+    sendBuzzerBeep2(); // Test błędu
+    delay(5000);
+    
+    sendBuzzerBeep3(); // Test alarmu
+    
+    logCommunication("BUZZER_TEST", "Test dźwięków zakończony");
 }

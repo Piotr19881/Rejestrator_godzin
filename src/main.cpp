@@ -9,6 +9,13 @@
 #include "actualization_logic.h"
 #include "communication_logic.h"
 #include "registration_logic.h"  // DODANE: dla funkcji kamery
+#include "sd_logger.h"          // DODANE: dla logToSD
+
+// Deklaracje funkcji
+void checkAutoLogout();
+void performAutoLogout();
+void updateWiFiLED();
+void initWiFiLED();
 
 // Konfiguracja WiFi
 String wifi_ssid = "";
@@ -31,6 +38,12 @@ bool sd_initialized = false;
 bool config_loaded = false;
 bool wifi_attempted = false;
 bool sync_attempted = false;
+
+// Konfiguracja diody WiFi status
+const int WIFI_LED_PIN = 12;
+bool sync_in_progress = false;
+unsigned long last_led_toggle = 0;
+bool led_state = false;
 
 // Deklaracje funkcji
 void initSerial();
@@ -56,10 +69,27 @@ void setup() {
   setupCommunicationLogic();
   delay(500);
   
+  // KROK 1.5: Inicjalizacja diody WiFi status
+  Serial.println("[MAIN] Inicjalizacja diody WiFi status...");
+  initWiFiLED();
+  delay(200);
+  
   // KROK 2: Inicjalizacja karty SD
-  Serial.println("[MAIN] Inicjalizacja karty SD...");
+  Serial.println("=== KROK 1: INICJALIZACJA KARTY SD ===");
+  Serial.println("Proba montowania karty SD...");
+  Serial.print("Pamiec przed SD: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
+  Serial.println("Rozpoczynam SD_MMC.begin()...");
+  Serial.flush(); // Wymuś wysłanie przed potencjalnym zawieszeniem
+  
   initSDCard();
   sd_initialized = true;
+  
+  Serial.println("Karta SD - inicjalizacja zakonczona");
+  Serial.print("Pamiec po SD: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
   delay(500);
 
   // KROK 2.5: Inicjalizacja kamery - DODANE!
@@ -98,6 +128,10 @@ void setup() {
   if (wifi_connected) {
     Serial.println("[MAIN] WiFi połączony - rozpoczynam synchronizację...");
     delay(500); // Delay przed synchronizacją
+    
+    // Oznacz że synchronizacja jest w toku
+    sync_in_progress = true;
+    
     syncTime();
     delay(500);
     Serial.println("[MAIN] Synchronizacja pracowników...");
@@ -107,6 +141,10 @@ void setup() {
     syncAlarmsFromGoogle(google_script_url);
     lastSync = millis();
     sync_attempted = true;
+    
+    // Zakończ synchronizację
+    sync_in_progress = false;
+    
     Serial.println("[MAIN] Synchronizacja zakończona");
   } else {
     sync_attempted = false;
@@ -167,6 +205,9 @@ void loop() {
       Serial.println("{\"sync_status\":\"starting\"}");
       Serial.flush();
       
+      // Oznacz że synchronizacja jest w toku
+      sync_in_progress = true;
+      
       syncPracownicyFromGoogle(google_script_url);
       syncAlarmsFromGoogle(google_script_url);
       
@@ -179,8 +220,17 @@ void loop() {
       // TYLKO JSON - BEZ LOGÓW DEBUGOWANIA!
       Serial.println("{\"sync_status\":\"completed\"}");
       Serial.flush();
+      
+      // Zakończ synchronizację
+      sync_in_progress = false;
     }
   }
+
+  // Sprawdź automatyczne wylogowanie
+  checkAutoLogout();
+
+  // Aktualizuj diodę WiFi status
+  updateWiFiLED();
 
   // Minimalne opóźnienie - UART ma najwyższy priorytet
   delay(50);
@@ -211,19 +261,50 @@ void initSerial() {
 void initSDCard() {
   // BRAK LOGÓW DEBUGOWANIA PRZEZ UART!
   
+  // Przed inicjalizacją - krótkie opóźnienie na stabilizację
+  delay(500);
+  
   // Użyj trybu 1-bitowego, aby uniknąć konfliktu pinów z kamerą
-  if (!SD_MMC.begin("/sdcard", true)) {
-    return; // Błąd - tylko wewnętrzne działanie
+  // Zwiększamy timeout i dodajemy retry logic
+  for (int retry = 0; retry < 3; retry++) {
+    Serial.print("Proba ");
+    Serial.print(retry + 1);
+    Serial.println("/3...");
+    Serial.flush();
+    
+    if (SD_MMC.begin("/sdcard", true)) {
+      Serial.println("SD_MMC.begin() - SUKCES");
+      Serial.flush();
+      
+      // Sprawdź typ karty
+      uint8_t cardType = SD_MMC.cardType();
+      Serial.print("Typ karty: ");
+      Serial.println(cardType);
+      Serial.flush();
+      
+      if (cardType != CARD_NONE) {
+        // Karta SD zainicjalizowana pomyślnie
+        uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+        Serial.print("Rozmiar karty: ");
+        Serial.print(cardSize);
+        Serial.println(" MB");
+        Serial.flush();
+        return; // Sukces
+      }
+    }
+    
+    Serial.println("SD_MMC.begin() - BLAD");
+    Serial.flush();
+    
+    // Błąd - spróbuj ponownie po krótkim opóźnieniu
+    SD_MMC.end();
+    delay(1000);
   }
   
-  uint8_t cardType = SD_MMC.cardType();
-  if (cardType == CARD_NONE) {
-    return; // Brak karty - tylko wewnętrzne działanie
-  }
-  
-  // Karta SD zainicjalizowana pomyślnie - tylko wewnętrzne działanie
-  uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-  // Rozmiar karty: cardSize MB - tylko wewnętrzne działanie
+  Serial.println("Wszystkie proby nieudane - kontynuuj bez karty SD");
+  Serial.flush();
+  // Wszystkie próby nieudane - kontynuuj bez karty SD
+  return;
 }
 
 // Wczytanie konfiguracji z pliku config.txt
@@ -308,5 +389,236 @@ void checkWiFiConnection() {
     // Utracono połączenie WiFi - tylko wewnętrzne działanie
     wifi_connected = false;
     connectToWiFi(); // Próba ponownego połączenia
+  }
+}
+
+// Funkcja automatycznego wylogowywania pracowników i sprawdzania alarmów
+void checkAutoLogout() {
+  static unsigned long lastAutoLogoutCheck = 0;
+  static unsigned long lastAlarmCheck = 0;
+  unsigned long currentTime = millis();
+  
+  // Sprawdzaj alarmy audio/visual (typ 0) co minutę (60000 ms)
+  if (currentTime - lastAlarmCheck >= 60000) {
+    lastAlarmCheck = currentTime;
+    
+    // Sprawdź alarmy typu 0 (audio/visual)
+    if (SD_MMC.exists("/czytnik_projekt/data/Alarms.csv")) {
+      File alarmsFile = SD_MMC.open("/czytnik_projekt/data/Alarms.csv", FILE_READ);
+      if (alarmsFile) {
+        String currentTimeStr = getCurrentTimestamp().substring(11, 16); // HH:MM
+        
+        while (alarmsFile.available()) {
+          String line = alarmsFile.readStringUntil('\n');
+          line.trim();
+          
+          if (line.length() > 0) {
+            // Format: ID,Type,Time,Description
+            int comma1 = line.indexOf(',');
+            int comma2 = line.indexOf(',', comma1 + 1);
+            int comma3 = line.indexOf(',', comma2 + 1);
+            
+            if (comma1 > 0 && comma2 > 0 && comma3 > 0) {
+              String type = line.substring(comma1 + 1, comma2);
+              String time = line.substring(comma2 + 1, comma3);
+              type.trim();
+              time.trim();
+              
+              // Jeśli to alarm typu 0 (audio/visual) i czas się zgadza
+              if (type == "0" && time == currentTimeStr) {
+                logToSD("[ALARM] Alarm audio/visual o " + currentTimeStr);
+                
+                // Wyślij sygnał dźwiękowy beep3
+                sendBuzzerBeep3();
+              }
+            }
+          }
+        }
+        alarmsFile.close();
+      }
+    }
+  }
+  
+  // Sprawdzaj auto-logout (typ 2) co godzinę (3600000 ms)
+  if (currentTime - lastAutoLogoutCheck >= 3600000) {
+    lastAutoLogoutCheck = currentTime;
+    
+    // Czytaj plik alarmów i sprawdź czy jest alarm typu 2 (auto-logout)
+    if (SD_MMC.exists("/czytnik_projekt/data/Alarms.csv")) {
+      File alarmsFile = SD_MMC.open("/czytnik_projekt/data/Alarms.csv", FILE_READ);
+      if (alarmsFile) {
+        String currentTimeStr = getCurrentTimestamp().substring(11, 16); // HH:MM
+        
+        while (alarmsFile.available()) {
+          String line = alarmsFile.readStringUntil('\n');
+          line.trim();
+          
+          if (line.length() > 0) {
+            // Format: ID,Type,Time,Description
+            int comma1 = line.indexOf(',');
+            int comma2 = line.indexOf(',', comma1 + 1);
+            int comma3 = line.indexOf(',', comma2 + 1);
+            
+            if (comma1 > 0 && comma2 > 0 && comma3 > 0) {
+              String type = line.substring(comma1 + 1, comma2);
+              String time = line.substring(comma2 + 1, comma3);
+              type.trim();
+              time.trim();
+              
+              // Jeśli to alarm typu 2 (auto-logout) i czas się zgadza
+              if (type == "2" && time == currentTimeStr) {
+                logToSD("[AUTO-LOGOUT] Wykonywanie automatycznego wylogowania o " + currentTimeStr);
+                
+                // Automatyczne wylogowanie wszystkich pracowników
+                // Tworzymy wpisy "WYJŚCIE" dla każdego pracownika który ma dzisiaj tylko "WEJŚCIE"
+                performAutoLogout();
+              }
+            }
+          }
+        }
+        alarmsFile.close();
+      }
+    }
+  }
+}
+
+// Funkcja wykonująca automatyczne wylogowanie
+void performAutoLogout() {
+  String currentDate = getCurrentTimestamp().substring(0, 10); // YYYY-MM-DD
+  String currentTimestamp = getCurrentTimestamp();
+  
+  // Sprawdź kto jest zalogowany (ma WEJŚCIE ale nie ma WYJŚCIA)
+  if (SD_MMC.exists("/czytnik_projekt/data/Pracownicy_logi.csv")) {
+    File logFile = SD_MMC.open("/czytnik_projekt/data/Pracownicy_logi.csv", FILE_READ);
+    if (logFile) {
+      String workersToLogout = "";
+      String line;
+      
+      // Przeczytaj wszystkie wpisy z dzisiejszego dnia
+      while (logFile.available()) {
+        line = logFile.readStringUntil('\n');
+        line.trim();
+        
+        if (line.length() > 0 && line.startsWith(currentDate)) {
+          // Format: timestamp,userId,name,surname,department,action,successful
+          int comma1 = line.indexOf(',');
+          int comma2 = line.indexOf(',', comma1 + 1);
+          int comma3 = line.indexOf(',', comma2 + 1);
+          int comma4 = line.indexOf(',', comma3 + 1);
+          int comma5 = line.indexOf(',', comma4 + 1);
+          int comma6 = line.indexOf(',', comma5 + 1);
+          
+          if (comma1 > 0 && comma2 > 0 && comma3 > 0 && comma4 > 0 && comma5 > 0 && comma6 > 0) {
+            String userId = line.substring(comma1 + 1, comma2);
+            String name = line.substring(comma2 + 1, comma3);
+            String surname = line.substring(comma3 + 1, comma4);
+            String department = line.substring(comma4 + 1, comma5);
+            String action = line.substring(comma5 + 1, comma6);
+            userId.trim();
+            name.trim();
+            surname.trim();
+            department.trim();
+            action.trim();
+            
+            // Sprawdź czy ten pracownik potrzebuje auto-wylogowania
+            if (action == "WEJŚCIE") {
+              // Dodaj do listy do wylogowania (jeśli nie ma już WYJŚCIA)
+              if (workersToLogout.indexOf(userId + "|") == -1) {
+                workersToLogout += userId + "|" + name + "|" + surname + "|" + department + "\n";
+              }
+            } else if (action == "WYJŚCIE") {
+              // Usuń z listy do wylogowania
+              int pos = workersToLogout.indexOf(userId + "|");
+              if (pos >= 0) {
+                int endPos = workersToLogout.indexOf('\n', pos);
+                if (endPos > pos) {
+                  workersToLogout = workersToLogout.substring(0, pos) + workersToLogout.substring(endPos + 1);
+                }
+              }
+            }
+          }
+        }
+      }
+      logFile.close();
+      
+      // Wykonaj auto-wylogowanie dla każdego pracownika na liście
+      if (workersToLogout.length() > 0) {
+        logToSD("[AUTO-LOGOUT] Wylogowywanie pracowników: " + workersToLogout);
+        
+        // Parsuj listę i twórz wpisy WYJŚCIE
+        int pos = 0;
+        while (pos < workersToLogout.length()) {
+          int endPos = workersToLogout.indexOf('\n', pos);
+          if (endPos == -1) break;
+          
+          String workerData = workersToLogout.substring(pos, endPos);
+          int pipe1 = workerData.indexOf('|');
+          int pipe2 = workerData.indexOf('|', pipe1 + 1);
+          int pipe3 = workerData.indexOf('|', pipe2 + 1);
+          
+          if (pipe1 > 0 && pipe2 > 0 && pipe3 > 0) {
+            String userId = workerData.substring(0, pipe1);
+            String name = workerData.substring(pipe1 + 1, pipe2);
+            String surname = workerData.substring(pipe2 + 1, pipe3);
+            String department = workerData.substring(pipe3 + 1);
+            
+            // Utwórz wpis WYJŚCIE
+            String autoLogoutEntry = currentTimestamp + "," + userId + "," + name + "," + surname + "," + department + ",WYJŚCIE,1";
+            
+            // Zapisz do pliku
+            File outFile = SD_MMC.open("/czytnik_projekt/data/Pracownicy_logi.csv", FILE_APPEND);
+            if (outFile) {
+              outFile.println(autoLogoutEntry);
+              outFile.close();
+              logToSD("[AUTO-LOGOUT] Wylogowano: " + name + " " + surname);
+            }
+          }
+          
+          pos = endPos + 1;
+        }
+      }
+    }
+  }
+}
+
+// === FUNKCJE OBSŁUGI DIODY WiFi STATUS ===
+
+// Inicjalizacja diody WiFi status
+void initWiFiLED() {
+  pinMode(WIFI_LED_PIN, OUTPUT);
+  digitalWrite(WIFI_LED_PIN, LOW); // Początkowy stan: wyłączona
+  led_state = false;
+  last_led_toggle = millis();
+  logToSD("[WIFI_LED] Inicjalizacja diody WiFi status na GPIO " + String(WIFI_LED_PIN));
+}
+
+// Aktualizacja stanu diody WiFi
+void updateWiFiLED() {
+  unsigned long currentTime = millis();
+  
+  if (!wifi_connected) {
+    // Brak połączenia WiFi - miganie powolne (0,3s świeci, 0,5s gaśnie)
+    unsigned long interval = led_state ? 300 : 500; // 300ms ON, 500ms OFF
+    
+    if (currentTime - last_led_toggle >= interval) {
+      led_state = !led_state;
+      digitalWrite(WIFI_LED_PIN, led_state ? HIGH : LOW);
+      last_led_toggle = currentTime;
+    }
+    
+  } else if (sync_in_progress) {
+    // Synchronizacja w toku - miganie szybkie (0,2s świeci, 0,2s gaśnie)
+    if (currentTime - last_led_toggle >= 200) {
+      led_state = !led_state;
+      digitalWrite(WIFI_LED_PIN, led_state ? HIGH : LOW);
+      last_led_toggle = currentTime;
+    }
+    
+  } else {
+    // WiFi połączony, brak synchronizacji - świeci stale
+    if (!led_state) {
+      led_state = true;
+      digitalWrite(WIFI_LED_PIN, HIGH);
+    }
   }
 }

@@ -60,4 +60,11 @@ void handlePingPongTest();
 void handleAuthorizationRequest(String userId);
 void sendSystemStatus();
 
+// Funkcje buzzera - komendy dźwiękowe dla ESP WROOM
+void sendBuzzerBeep1();  // Sukces autoryzacji - ciągły sygnał 0,5s
+void sendBuzzerBeep2();  // Błąd autoryzacji - dwa piknięcia 
+void sendBuzzerBeep3();  // Alarm typu 0 - trzy serie po 3 sygnały
+void sendBuzzerCommand(String beepType);
+void testBuzzerSounds(); // Funkcja testowa wszystkich dźwięków
+
 #endif // COMMUNICATION_LOGIC_H
